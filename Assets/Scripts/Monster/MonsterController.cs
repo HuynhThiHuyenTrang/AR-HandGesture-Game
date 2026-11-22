@@ -415,4 +415,5 @@ public class MonsterController : MonoBehaviour
     public int GetMaxHealth() => maxHealth;
     public bool IsBoss() => isBoss;
     public bool IsStunned() => isStunned;
+    public bool IsDead() => isDead;
 }

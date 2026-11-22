@@ -89,7 +89,7 @@ public class MonsterSpawner : MonoBehaviour
 
     void Update()
     {
-        activeMonsters.RemoveAll(m => m == null);
+        activeMonsters.RemoveAll(m => m == null || (m.TryGetComponent<MonsterController>(out var mc) && mc.IsDead()));
 
         // Đang trong thời gian nghỉ ngơi 2 giây giữa các màn (Level Transition Pause)
         if (pauseSpawnTimer > 0f)
@@ -273,7 +273,7 @@ public class MonsterSpawner : MonoBehaviour
 
     public int GetAliveMonsterCount()
     {
-        activeMonsters.RemoveAll(m => m == null);
+        activeMonsters.RemoveAll(m => m == null || (m.TryGetComponent<MonsterController>(out var mc) && mc.IsDead()));
         return activeMonsters.Count;
     }
 

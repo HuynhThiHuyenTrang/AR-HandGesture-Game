@@ -23,11 +23,14 @@ public class PlayerCombatController : MonoBehaviour
     private float shieldTimer = 0f;
 
     [Header("--- HIỆU QUẢ ĐÒN ĐÁNH ---")]
-    [Tooltip("Sát thương đòn chém gây ra cho quái vật")]
-    [SerializeField] private int slashDamage = 45;
+    [Tooltip("Sát thương đòn chém gây ra cho quái vật (250 HP để chạm nhẹ là 1-hit quái thường chết ngay)")]
+    [SerializeField] private int slashDamage = 250;
 
     [Tooltip("Khoảng cách tối đa mà đòn chém có thể với tới (mét)")]
-    [SerializeField] private float slashReachDistance = 4.5f;
+    [SerializeField] private float slashReachDistance = 8.0f;
+
+    [Tooltip("Dung sai bán kính quét trúng đòn trên màn hình (pixel, cực rộng để không cần căn chuẩn xác)")]
+    [SerializeField] private float slashHitPixelTolerance = 450f;
 
     [Header("--- TIẾN ĐỘ THU THẬP VẬT PHẨM ---")]
     [SerializeField] private int itemsCollected = 0;
@@ -148,13 +151,15 @@ public class PlayerCombatController : MonoBehaviour
         MonsterController[] allMonsters = Object.FindObjectsByType<MonsterController>(FindObjectsSortMode.None);
         foreach (var monster in allMonsters)
         {
-            if (monster == null) continue;
+            if (monster == null || monster.IsDead()) continue;
 
             Vector3 worldPos = monster.transform.position;
             Vector3 camPos = cam != null ? cam.transform.position : transform.position;
             float worldDist = Vector3.Distance(camPos, worldPos);
 
             if (worldDist > slashReachDistance) continue;
+
+            bool isHit = false;
 
             if (cam != null)
             {
@@ -164,22 +169,27 @@ public class PlayerCombatController : MonoBehaviour
                     Vector2 monsterGuiPos = new Vector2(screenPoint.x, sh - screenPoint.y);
                     float distToSlashLine = DistancePointToSegment(monsterGuiPos, p1, p2);
 
-                    // Quái vật CHỈ trúng đòn khi vệt kiếm khí thực sự cắt qua vị trí quái trên màn hình (< 140px)
-                    // Tuyệt đối không tự động gây sát thương cận chiến để tránh việc quái tự chết khi chưa chém!
-                    if (distToSlashLine <= 140f && worldDist <= slashReachDistance)
+                    // Cơ chế chạm nhẹ là trúng (Super Lenient Hitbox - Cực kỳ dễ chơi):
+                    // 1. Vệt kiếm chém đi gần quái trong phạm vi rộng (<= 450px)
+                    // 2. HOẶC quái đang ở trước mặt trong cự ly gần (<= 4.2m)
+                    // 3. HOẶC quái nằm trong khung nhìn màn hình camera (<= 6.5m)
+                    if (distToSlashLine <= slashHitPixelTolerance || worldDist <= 4.2f || (screenPoint.x >= -80 && screenPoint.x <= sw + 80 && screenPoint.y >= -80 && screenPoint.y <= sh + 80 && worldDist <= 6.5f))
                     {
-                        monster.TakeDamage(finalDamage);
-                        hitAnyMonster = true;
-                        lastSlashHitTime = Time.time;
-                        Debug.Log($"<color=green>[Combat] ⚔️ CHÉM TRÚNG QUÁI {monster.name}! Combo: x{comboCount} | Sát thương: {finalDamage}{(isCrit ? " (CHÍ MẠNG!)" : "")}</color>");
+                        isHit = true;
                     }
                 }
             }
-            else if (worldDist <= 2.2f)
+            else if (worldDist <= slashReachDistance)
+            {
+                isHit = true;
+            }
+
+            if (isHit)
             {
                 monster.TakeDamage(finalDamage);
                 hitAnyMonster = true;
                 lastSlashHitTime = Time.time;
+                Debug.Log($"<color=green>[Combat] ⚔️ CHÉM TRÚNG QUÁI {monster.name}! Combo: x{comboCount} | Sát thương: {finalDamage}{(isCrit ? " (CHÍ MẠNG!)" : "")}</color>");
             }
         }
 
@@ -286,7 +296,7 @@ public class PlayerCombatController : MonoBehaviour
         MonsterController[] allMonsters = Object.FindObjectsByType<MonsterController>(FindObjectsSortMode.None);
         foreach (var monster in allMonsters)
         {
-            if (monster == null) continue;
+            if (monster == null || monster.IsDead()) continue;
             float distance = Vector3.Distance(transform.position, monster.transform.position);
             if (distance <= 4.0f)
             {

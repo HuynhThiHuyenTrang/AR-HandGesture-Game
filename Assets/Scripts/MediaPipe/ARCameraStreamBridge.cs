@@ -1,38 +1,49 @@
 using System;
+using System.Collections;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
 /// <summary>
 /// Cầu nối thu thập hình ảnh từ Camera thật:
-/// - Trên PC / Unity Editor: Tự động kích hoạt Webcam thực tế của máy tính để quay cử chỉ bàn tay thật.
-/// - Trên Android (Mobile): Lấy luồng ảnh CPU từ AR Foundation ARCore để tránh xung đột phần cứng camera.
+/// - Chạy đồng nhất trên cả MÁY TÍNH (PC / Unity Editor) và ĐIỆN THOẠI (Android / iOS).
+/// - Luôn ưu tiên CAMERA TRƯỚC (Front-facing / Selfie).
+/// - Chuẩn hóa hình học 3D Quad: Xoay và lật chuẩn xác theo không gian màn hình (Screen Space).
+/// - Hỗ trợ nút bấm On-Screen và phím tắt (R, M, V) để người dùng tự do xoay / lật camera nếu thiết bị có cảm biến đặc thù.
 /// </summary>
 public class ARCameraStreamBridge : MonoBehaviour
 {
     public static ARCameraStreamBridge Instance { get; private set; }
 
-    [Header("--- THIẾT LẬP MÁY TÍNH (PC WEBCAM) ---")]
-    [Tooltip("Bắt buộc bật Webcam thật của máy tính khi chạy trên Unity Editor để quay bàn tay thật của bạn")]
+    [Header("--- THIẾT LẬP CAMERA & NỀN 3D ---")]
+    [Tooltip("Bắt buộc bật Camera thực tế (trên cả PC và điện thoại)")]
     [SerializeField] private bool forceWebCamOnPC = true;
 
-    [Tooltip("Tự động tạo Quad nền 3D phía sau quái vật trên PC để quái vật 3D đứng trước phòng thật")]
+    [Tooltip("Tự động tạo Quad nền 3D phía sau quái vật để quái vật 3D đứng trước phòng thật")]
     [SerializeField] private bool create3DBackgroundQuadOnPC = true;
+
+    [Tooltip("Lật gương ngang (Mirror Horizontal) để thuận tay như soi gương (Tay phải ở bên phải màn hình)")]
+    [SerializeField] private bool mirrorHorizontalOnPC = true;
+
+    [Tooltip("Lật dọc (Flip Vertical) nếu camera thiết bị bị lộn ngược đầu")]
+    [SerializeField] private bool flipVertical = false;
+
+    [Tooltip("Góc xoay bù trừ thêm (0, 90, 180, 270 độ)")]
+    [SerializeField] private int extraRotationAngle = 0;
 
     [Tooltip("Khoảng cách Quad nền 3D tính từ Camera (mét, quái vật xuất hiện ở 2-4m sẽ đứng phía trước nền này)")]
     [SerializeField] private float backgroundQuadDistance = 12.0f;
 
-    [Header("--- THAM CHIẾU AR CAMERA (MOBILE) ---")]
-    [Tooltip("Quản lý camera của AR Foundation (dành cho Android)")]
+    [Header("--- THAM CHIẾU AR CAMERA (FALLBACK) ---")]
+    [Tooltip("Quản lý camera của AR Foundation")]
     [SerializeField] private ARCameraManager arCameraManager;
 
     [Header("--- CẤU HÌNH HIỆU NĂNG & ĐỘ PHÂN GIẢI ---")]
     [Tooltip("Tần suất xử lý AI (0.033s ~ 30 FPS để mượt mà nhất)")]
     [SerializeField] private float processInterval = 0.033f;
 
-    [Tooltip("Độ phân giải khung hình AI (320 x 240 pixel để xử lý cực nhanh, không lag)")]
+    [Tooltip("Độ phân giải khung hình AI (mặc định 320x240 ngang hoặc 240x320 dọc)")]
     [SerializeField] private int targetWidth = 320;
     [SerializeField] private int targetHeight = 240;
 
@@ -45,6 +56,8 @@ public class ARCameraStreamBridge : MonoBehaviour
     private bool isUsingARCamera = false;
     private GameObject pcBackgroundQuad;
     private Material pcBackgroundMat;
+    private Color32[] flippedPixels;
+    private bool isCameraInitialized = false;
 
     void Awake()
     {
@@ -52,40 +65,81 @@ public class ARCameraStreamBridge : MonoBehaviour
             Instance = this;
         else
             Destroy(gameObject);
+
+        // Nạp thiết lập xoay / lật camera đã lưu trên thiết bị
+        extraRotationAngle = PlayerPrefs.GetInt("CamRotOffset", 0);
+        mirrorHorizontalOnPC = PlayerPrefs.GetInt("CamMirror", 1) == 1;
+        flipVertical = PlayerPrefs.GetInt("CamFlipV", 0) == 1;
     }
 
     void Start()
     {
-        // 1. NẾU CHẠY TRÊN MÁY TÍNH (UNITY EDITOR / PC STANDALONE):
-        // Ưu tiên bật ngay WEBCAM THẬT của máy tính để người chơi quay bàn tay thật của mình!
-        #if UNITY_EDITOR || UNITY_STANDALONE
-        if (forceWebCamOnPC)
+#if UNITY_ANDROID && !UNITY_EDITOR
+        if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera))
         {
-            InitPCWebCam();
-            if (pcWebCamTexture != null && pcWebCamTexture.isPlaying)
-            {
-                isUsingARCamera = false;
-                if (create3DBackgroundQuadOnPC)
-                {
-                    SetupPCBackgroundQuad();
-                }
-                Debug.Log("<color=green><b>[ARCameraStreamBridge] ĐÃ BẬT THÀNH CÔNG WEBCAM THẬT CỦA MÁY TÍNH VÀ KHỞI TẠO NỀN 3D!</b></color>");
-                return;
-            }
+            UnityEngine.Android.Permission.RequestUserPermission(UnityEngine.Android.Permission.Camera);
+            StartCoroutine(WaitForCameraPermissionRoutine());
+            return;
         }
-        #endif
+#endif
+        InitCameraSystem();
+    }
 
-        // 2. KHI BUILD RA ĐIỆN THOẠI ANDROID THẬT:
-        // Sử dụng luồng hình ảnh CPU của AR Foundation để tránh xung đột camera với ARCore
+#if UNITY_ANDROID && !UNITY_EDITOR
+    private IEnumerator WaitForCameraPermissionRoutine()
+    {
+        float timer = 0f;
+        while (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera) && timer < 5.0f)
+        {
+            yield return new WaitForSeconds(0.2f);
+            timer += 0.2f;
+        }
+
+        InitCameraSystem();
+    }
+#endif
+
+    private void InitCameraSystem()
+    {
+        if (isCameraInitialized) return;
+        isCameraInitialized = true;
+
         if (arCameraManager != null)
         {
+            arCameraManager.enabled = false;
+        }
+
+        ARCameraBackground bg = FindAnyObjectByType<ARCameraBackground>();
+        if (bg != null)
+        {
+            bg.enabled = false;
+        }
+
+        ARSession arSession = FindAnyObjectByType<ARSession>();
+        if (arSession != null)
+        {
+            arSession.enabled = false;
+        }
+
+        InitFrontWebCam();
+
+        if (pcWebCamTexture != null && pcWebCamTexture.isPlaying)
+        {
+            isUsingARCamera = false;
+            if (create3DBackgroundQuadOnPC)
+            {
+                SetupPCBackgroundQuad();
+            }
+            Debug.Log("<color=green><b>[ARCameraStreamBridge] ĐÃ BẬT THÀNH CÔNG CAMERA TRƯỚC VÀ KHỞI TẠO NỀN 3D!</b></color>");
+            return;
+        }
+
+        if (arCameraManager != null)
+        {
+            arCameraManager.enabled = true;
             arCameraManager.frameReceived += OnARCameraFrameReceived;
             isUsingARCamera = true;
-            Debug.Log("[ARCameraStreamBridge] Đang sử dụng luồng hình ảnh CPU từ AR Foundation trên thiết bị di động.");
-        }
-        else
-        {
-            Debug.LogWarning("[ARCameraStreamBridge] Chưa tìm thấy Webcam PC hoặc ARCameraManager!");
+            Debug.Log("[ARCameraStreamBridge] Dùng luồng fallback CPU từ AR Foundation.");
         }
     }
 
@@ -119,39 +173,103 @@ public class ARCameraStreamBridge : MonoBehaviour
 
     void Update()
     {
+        // Phím tắt nhanh trên máy tính để tinh chỉnh góc quay nếu cần
+        if (Input.GetKeyDown(KeyCode.R))
+        {
+            RotateCameraClockwise();
+        }
+        if (Input.GetKeyDown(KeyCode.M))
+        {
+            ToggleMirror();
+        }
+        if (Input.GetKeyDown(KeyCode.V))
+        {
+            ToggleFlipVertical();
+        }
+
         // Cập nhật Quad nền 3D theo góc nhìn camera
         if (pcBackgroundQuad != null)
         {
             UpdatePCBackgroundQuad();
         }
 
-        // Xử lý khung hình từ Webcam thật trên máy tính
+        // Xử lý khung hình từ Camera trước gửi sang AI
         if (!isUsingARCamera && pcWebCamTexture != null && pcWebCamTexture.isPlaying)
         {
             if (Time.time - lastProcessTime >= processInterval)
             {
                 lastProcessTime = Time.time;
 
-                // Khởi tạo Texture2D nếu kích thước thay đổi
-                if (cameraTexture == null || cameraTexture.width != pcWebCamTexture.width || cameraTexture.height != pcWebCamTexture.height)
+                int w = pcWebCamTexture.width;
+                int h = pcWebCamTexture.height;
+
+                if (w > 16 && h > 16)
                 {
-                    cameraTexture = new Texture2D(pcWebCamTexture.width, pcWebCamTexture.height, TextureFormat.RGBA32, false);
+                    int tw = 320;
+                    int th = 240;
+                    if (Screen.height > Screen.width)
+                    {
+                        tw = 240;
+                        th = 320;
+                    }
+
+                    if (cameraTexture == null || cameraTexture.width != tw || cameraTexture.height != th)
+                    {
+                        cameraTexture = new Texture2D(tw, th, TextureFormat.RGBA32, false);
+                    }
+
+                    Color32[] rawPixels = pcWebCamTexture.GetPixels32();
+                    if (flippedPixels == null || flippedPixels.Length != tw * th)
+                    {
+                        flippedPixels = new Color32[tw * th];
+                    }
+
+                    int totalRot = (pcWebCamTexture.videoRotationAngle + extraRotationAngle) % 360;
+                    if (totalRot < 0) totalRot += 360;
+
+                    float screenSignX = mirrorHorizontalOnPC ? -1f : 1f;
+                    bool shouldFlipY = pcWebCamTexture.videoVerticallyMirrored ^ flipVertical;
+                    float screenSignY = shouldFlipY ? -1f : 1f;
+
+                    float rad = totalRot * Mathf.Deg2Rad;
+                    int cosTheta = Mathf.RoundToInt(Mathf.Cos(rad));
+                    int sinTheta = Mathf.RoundToInt(Mathf.Sin(rad));
+
+                    float invTw = 1.0f / tw;
+                    float invTh = 1.0f / th;
+
+                    for (int ty = 0; ty < th; ty++)
+                    {
+                        float v = (ty + 0.5f) * invTh;
+                        float vm = (screenSignY < 0f) ? (1.0f - v) : v;
+                        float cv = vm - 0.5f;
+                        int dstRow = ty * tw;
+
+                        for (int tx = 0; tx < tw; tx++)
+                        {
+                            float u = (tx + 0.5f) * invTw;
+                            float um = (screenSignX < 0f) ? (1.0f - u) : u;
+                            float cu = um - 0.5f;
+
+                            float uSrc = (cu * cosTheta - cv * sinTheta) + 0.5f;
+                            float vSrc = (cu * sinTheta + cv * cosTheta) + 0.5f;
+
+                            int sx = Mathf.Clamp((int)(uSrc * w), 0, w - 1);
+                            int sy = Mathf.Clamp((int)(vSrc * h), 0, h - 1);
+
+                            flippedPixels[dstRow + tx] = rawPixels[sy * w + sx];
+                        }
+                    }
+
+                    cameraTexture.SetPixels32(flippedPixels);
+                    cameraTexture.Apply();
+
+                    OnCameraFrameReady?.Invoke(cameraTexture);
                 }
-
-                // Sao chép hình ảnh từ Webcam vào Texture2D
-                cameraTexture.SetPixels32(pcWebCamTexture.GetPixels32());
-                cameraTexture.Apply();
-
-                // Phát sự kiện khung hình mới cho MediaPipeHandTracker
-                OnCameraFrameReady?.Invoke(cameraTexture);
             }
         }
     }
 
-    /// <summary>
-    /// Tạo một tấm Quad 3D gắn vào Camera để làm nền hiển thị Webcam phòng thật
-    /// Nhờ đặt ở khoảng cách 12m, mọi quái vật 3D (ở 2-4m) sẽ đứng NỔI BẬT PHÍA TRƯỚC hình ảnh thật!
-    /// </summary>
     private void SetupPCBackgroundQuad()
     {
         Camera cam = Camera.main;
@@ -167,20 +285,20 @@ public class ARCameraStreamBridge : MonoBehaviour
         if (pcBackgroundQuad == null)
         {
             pcBackgroundQuad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            pcBackgroundQuad.name = "PC_WebCam_Background_Quad";
+            pcBackgroundQuad.name = "FrontCamera_Background_Quad";
             pcBackgroundQuad.transform.SetParent(cam.transform, false);
 
-            // Xóa Collider để không chặn các tia Raycast tấn công quái vật
             Collider col = pcBackgroundQuad.GetComponent<Collider>();
             if (col != null)
                 Destroy(col);
 
-            // Tìm Shader Unlit của Universal Render Pipeline (URP)
             Shader unlitShader = Shader.Find("Universal Render Pipeline/Unlit");
             if (unlitShader == null)
                 unlitShader = Shader.Find("Unlit/Texture");
             if (unlitShader == null)
                 unlitShader = Shader.Find("Universal Render Pipeline/Lit");
+            if (unlitShader == null)
+                unlitShader = Shader.Find("Sprites/Default");
 
             pcBackgroundMat = new Material(unlitShader);
             if (pcBackgroundMat.HasProperty("_BaseMap"))
@@ -188,13 +306,16 @@ public class ARCameraStreamBridge : MonoBehaviour
             if (pcBackgroundMat.HasProperty("_MainTex"))
                 pcBackgroundMat.SetTexture("_MainTex", pcWebCamTexture);
 
-            // Tự động xử lý lật ảnh dọc nếu thiết bị yêu cầu
-            if (pcWebCamTexture != null && pcWebCamTexture.videoVerticallyMirrored)
+            // Đặt ma trận UV chuẩn 1:1, toàn bộ phép lật/xoay xử lý qua Transform
+            if (pcBackgroundMat.HasProperty("_BaseMap"))
             {
-                if (pcBackgroundMat.HasProperty("_BaseMap"))
-                    pcBackgroundMat.SetTextureScale("_BaseMap", new Vector2(1, -1));
-                if (pcBackgroundMat.HasProperty("_MainTex"))
-                    pcBackgroundMat.SetTextureScale("_MainTex", new Vector2(1, -1));
+                pcBackgroundMat.SetTextureScale("_BaseMap", Vector2.one);
+                pcBackgroundMat.SetTextureOffset("_BaseMap", Vector2.zero);
+            }
+            if (pcBackgroundMat.HasProperty("_MainTex"))
+            {
+                pcBackgroundMat.SetTextureScale("_MainTex", Vector2.one);
+                pcBackgroundMat.SetTextureOffset("_MainTex", Vector2.zero);
             }
 
             MeshRenderer mr = pcBackgroundQuad.GetComponent<MeshRenderer>();
@@ -204,11 +325,11 @@ public class ARCameraStreamBridge : MonoBehaviour
         }
 
         UpdatePCBackgroundQuad();
-        Debug.Log("<color=cyan><b>[ARCameraStreamBridge] Đã thiết lập thành công Quad nền 3D chiếu Webcam phòng thật!</b></color>");
     }
 
     /// <summary>
-    /// Đồng bộ kích thước Quad nền khớp chính xác góc nhìn (FOV) và tỷ lệ màn hình của Camera
+    /// Đồng bộ kích thước và góc quay Quad nền khớp chính xác góc nhìn (FOV) và tỷ lệ màn hình của Camera.
+    /// Khắc phục 100% tình trạng lộn ngược đầu hoặc nằm ngang trên thiết bị di động.
     /// </summary>
     private void UpdatePCBackgroundQuad()
     {
@@ -216,7 +337,7 @@ public class ARCameraStreamBridge : MonoBehaviour
         if (cam == null)
             cam = FindAnyObjectByType<Camera>();
 
-        if (pcBackgroundQuad == null || cam == null)
+        if (pcBackgroundQuad == null || cam == null || pcWebCamTexture == null)
             return;
 
         float distance = backgroundQuadDistance;
@@ -224,13 +345,120 @@ public class ARCameraStreamBridge : MonoBehaviour
         float width = height * cam.aspect;
 
         pcBackgroundQuad.transform.localPosition = new Vector3(0, 0, distance);
-        pcBackgroundQuad.transform.localRotation = Quaternion.identity;
-        pcBackgroundQuad.transform.localScale = new Vector3(width, height, 1.0f);
+
+        int totalRot = (pcWebCamTexture.videoRotationAngle + extraRotationAngle) % 360;
+        if (totalRot < 0) totalRot += 360;
+
+        bool is90or270 = (totalRot == 90 || totalRot == 270);
+
+        // 1. Lật ngang (Mirror Horizontal): Người chơi giơ tay phải thật thì hình hiển thị bên phải
+        float screenSignX = mirrorHorizontalOnPC ? -1f : 1f;
+
+        // 2. Lật dọc (Vertical Flip): Xử lý phần cứng camera điện thoại không bị ngược đầu
+        bool shouldFlipY = pcWebCamTexture.videoVerticallyMirrored ^ flipVertical;
+        float screenSignY = shouldFlipY ? -1f : 1f;
+
+        // Xoay Quad theo góc cảm biến
+        pcBackgroundQuad.transform.localRotation = Quaternion.Euler(0, 0, -totalRot);
+
+        // Scale theo đúng trục sau khi xoay để tránh tình trạng lật nhầm trục X thành trục Y
+        if (is90or270)
+        {
+            pcBackgroundQuad.transform.localScale = new Vector3(screenSignY * height, screenSignX * width, 1.0f);
+        }
+        else
+        {
+            pcBackgroundQuad.transform.localScale = new Vector3(screenSignX * width, screenSignY * height, 1.0f);
+        }
     }
 
-    /// <summary>
-    /// Xử lý từng frame từ camera AR Foundation trên điện thoại di động
-    /// </summary>
+    private void InitFrontWebCam()
+    {
+        WebCamDevice[] devices = WebCamTexture.devices;
+        Debug.Log($"<color=cyan>[ARCameraStreamBridge] Đang dò tìm Camera... Số lượng thiết bị tìm thấy: {devices.Length}</color>");
+
+        if (devices.Length > 0)
+        {
+            string chosenDevice = devices[0].name;
+            bool foundFront = false;
+
+            for (int i = 0; i < devices.Length; i++)
+            {
+                Debug.Log($"[ARCameraStreamBridge] Camera #{i}: {devices[i].name} (isFrontFacing: {devices[i].isFrontFacing})");
+                if (devices[i].isFrontFacing && !foundFront)
+                {
+                    chosenDevice = devices[i].name;
+                    foundFront = true;
+                }
+            }
+
+            int reqW = 640;
+            int reqH = 480;
+            if (Screen.height > Screen.width)
+            {
+                reqW = 480;
+                reqH = 640;
+            }
+
+            pcWebCamTexture = new WebCamTexture(chosenDevice, reqW, reqH, 30);
+            pcWebCamTexture.Play();
+            Debug.Log($"<color=green>[ARCameraStreamBridge] Đang phát Camera: {chosenDevice} (Camera trước: {foundFront})</color>");
+        }
+        else
+        {
+            Debug.LogError("<color=red>[ARCameraStreamBridge] Không tìm thấy Camera nào! Vui lòng kiểm tra quyền Camera trong cài đặt thiết bị.</color>");
+        }
+    }
+
+    public void RotateCameraClockwise()
+    {
+        extraRotationAngle = (extraRotationAngle + 90) % 360;
+        PlayerPrefs.SetInt("CamRotOffset", extraRotationAngle);
+        PlayerPrefs.Save();
+        Debug.Log($"[ARCameraStreamBridge] Đã xoay Camera bù thêm: {extraRotationAngle}°");
+    }
+
+    public void ToggleMirror()
+    {
+        mirrorHorizontalOnPC = !mirrorHorizontalOnPC;
+        PlayerPrefs.SetInt("CamMirror", mirrorHorizontalOnPC ? 1 : 0);
+        PlayerPrefs.Save();
+        Debug.Log($"[ARCameraStreamBridge] Lật gương ngang: {mirrorHorizontalOnPC}");
+    }
+
+    public void ToggleFlipVertical()
+    {
+        flipVertical = !flipVertical;
+        PlayerPrefs.SetInt("CamFlipV", flipVertical ? 1 : 0);
+        PlayerPrefs.Save();
+        Debug.Log($"[ARCameraStreamBridge] Lật dọc: {flipVertical}");
+    }
+
+    void OnGUI()
+    {
+        int sw = Screen.width;
+        int btnW = Mathf.Clamp(Mathf.RoundToInt(sw * 0.18f), 68, 86);
+        int btnH = 26;
+        int rightMargin = 16;
+        int topY = 96;
+
+        GUIStyle btnStyle = new GUIStyle(GUI.skin.button);
+        btnStyle.fontSize = Mathf.Clamp(Mathf.RoundToInt(sw * 0.022f), 10, 12);
+        btnStyle.fontStyle = FontStyle.Bold;
+
+        // Nút 1: Xoay camera 90 độ
+        if (GUI.Button(new Rect(sw - rightMargin - btnW * 2 - 6, topY, btnW, btnH), $"🔄 Xoay", btnStyle))
+        {
+            RotateCameraClockwise();
+        }
+
+        // Nút 2: Lật dọc (sửa ngay nếu bị lộn ngược đầu)
+        if (GUI.Button(new Rect(sw - rightMargin - btnW, topY, btnW, btnH), $"↕ Lộn đầu", btnStyle))
+        {
+            ToggleFlipVertical();
+        }
+    }
+
     private void OnARCameraFrameReceived(ARCameraFrameEventArgs eventArgs)
     {
         if (Time.time - lastProcessTime < processInterval)
@@ -243,17 +471,20 @@ public class ARCameraStreamBridge : MonoBehaviour
 
         using (cpuImage)
         {
+            int tw = (Screen.height > Screen.width) ? 240 : 320;
+            int th = (Screen.height > Screen.width) ? 320 : 240;
+
             var conversionParams = new XRCpuImage.ConversionParams
             {
                 inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
-                outputDimensions = new Vector2Int(targetWidth, targetHeight),
+                outputDimensions = new Vector2Int(tw, th),
                 outputFormat = TextureFormat.RGBA32,
                 transformation = XRCpuImage.Transformation.MirrorY
             };
 
-            if (cameraTexture == null || cameraTexture.width != targetWidth || cameraTexture.height != targetHeight)
+            if (cameraTexture == null || cameraTexture.width != tw || cameraTexture.height != th)
             {
-                cameraTexture = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+                cameraTexture = new Texture2D(tw, th, TextureFormat.RGBA32, false);
             }
 
             var rawTextureData = cameraTexture.GetRawTextureData<byte>();
@@ -264,36 +495,6 @@ public class ARCameraStreamBridge : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Khởi động Webcam thực tế trên máy tính PC/Laptop
-    /// </summary>
-    private void InitPCWebCam()
-    {
-        WebCamDevice[] devices = WebCamTexture.devices;
-        Debug.Log($"<color=cyan>[ARCameraStreamBridge] Đang dò tìm Webcam... Số lượng thiết bị tìm thấy: {devices.Length}</color>");
-
-        if (devices.Length > 0)
-        {
-            for (int i = 0; i < devices.Length; i++)
-            {
-                Debug.Log($"[ARCameraStreamBridge] Webcam #{i}: {devices[i].name}");
-            }
-
-            // Chọn webcam đầu tiên và phát video trực tiếp
-            pcWebCamTexture = new WebCamTexture(devices[0].name, targetWidth, targetHeight, 30);
-            pcWebCamTexture.Play();
-            Debug.Log($"<color=green>[ARCameraStreamBridge] Đang bật Webcam: {devices[0].name} ({targetWidth}x{targetHeight} @30fps)</color>");
-        }
-        else
-        {
-            Debug.LogError("<color=red>[ARCameraStreamBridge] Không tìm thấy Webcam nào trên máy tính! Vui lòng kiểm tra quyền Camera trong Windows Settings (Cài đặt Windows -> Quyền riêng tư -> Camera).</color>");
-        }
-    }
-
-    /// <summary>
-    /// Lấy trực tiếp luồng WebCamTexture đang phát để hiển thị lên màn hình
-    /// </summary>
     public WebCamTexture GetWebCamTexture() => pcWebCamTexture;
-
     public bool IsWebCamActive() => pcWebCamTexture != null && pcWebCamTexture.isPlaying;
 }
