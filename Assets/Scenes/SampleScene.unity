@@ -280,111 +280,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   raycastManager: {fileID: 706847479}
   cubePrefab: {fileID: 7106989139624082494, guid: 7d755240d8b549247bb5845129d34a72, type: 3}
---- !u!114 &706847483
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 706847477}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: a1d0275ddce95a04d937ca4d33ef7266, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  confirmationDuration: 0.18
-  gestureCooldown: 0.35
-  confidenceThreshold: 0.5
-  detectedCandidate: 0
-  currentConfirmedGesture: 0
-  candidateDuration: 0
-  cooldownTimer: 0
-  isHandTracked: 0
---- !u!114 &706847484
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 706847477}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f9aa0accb2afbc74ab9419e91057c394, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  maxHealth: 100
-  shieldDuration: 2
-  playerAttackDamage: 35
-  pushRadius: 3
-  pushForceDistance: 2
---- !u!114 &706847485
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 706847477}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 4448dbc66f96d7249822647c8df203f3, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  forceWebCamOnPC: 1
-  arCameraManager: {fileID: 1105586630}
-  processInterval: 0.033
-  targetWidth: 320
-  targetHeight: 240
---- !u!114 &706847486
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 706847477}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: b4a7d6e5c8f1234908ef123456789abc, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  currentLevel: 1
-  spawnInterval: 5
-  maxMonstersAlive: 3
-  autoSpawn: 1
-  spawnDistance: 2.4
-  spawnAngleSpread: 25
-  monsterPrefab: {fileID: 7106989139624082494, guid: 7d755240d8b549247bb5845129d34a72, type: 3}
-  batPrefab: {fileID: 6262803650956883851, guid: 8b7c555467aea3e4cb4810c07cd2f97c, type: 3}
-  monsterScaleMultiplier: 50
---- !u!114 &706847487
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 706847477}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 8f9b1c3e4a5d67890123456789abcdef, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  showSkeletonOnMainScreen: 0
-  showStatusBar: 1
---- !u!114 &706847488
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 706847477}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 3e7a1b4c5d6e7f890123456789abcdef, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  fullScreenWebCamOnPC: 1
-  currentScore: 0
-  monstersKilledInLevel: 0
-  totalMonstersPerLevel: 30
 --- !u!114 &706847479
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -451,6 +346,129 @@ Transform:
   - {fileID: 1790157806}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &706847483
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 706847477}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a1d0275ddce95a04d937ca4d33ef7266, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  slashSpeedThreshold: 0.18
+  slashMinDisplacement: 0.025
+  openPalmMinPinch: 0.075
+  pinchDistanceThreshold: 0.08
+  slashCooldown: 0.08
+  gestureCooldown: 0.35
+  confidenceThreshold: 0.5
+  detectedCandidate: 0
+  currentConfirmedGesture: 0
+  candidateDuration: 0
+  cooldownTimer: 0
+  isHandTracked: 0
+  currentPinchDistance: 0
+  currentHandCenterY: 0
+  currentHandSpeed: 0
+--- !u!114 &706847484
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 706847477}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f9aa0accb2afbc74ab9419e91057c394, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  maxHealth: 100
+  shieldDuration: 2
+  slashDamage: 250
+  slashReachDistance: 8
+  slashHitPixelTolerance: 450
+  itemsCollected: 0
+  comboCount: 0
+  comboWindow: 2.5
+--- !u!114 &706847485
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 706847477}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4448dbc66f96d7249822647c8df203f3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  forceWebCamOnPC: 1
+  create3DBackgroundQuadOnPC: 1
+  mirrorHorizontalOnPC: 1
+  backgroundQuadDistance: 12
+  arCameraManager: {fileID: 1105586630}
+  processInterval: 0.033
+  targetWidth: 320
+  targetHeight: 240
+--- !u!114 &706847486
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 706847477}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b4a7d6e5c8f1234908ef123456789abc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  currentLevel: 1
+  spawnInterval: 5
+  maxMonstersAlive: 3
+  autoSpawn: 1
+  spawnDistance: 2.4
+  spawnAngleSpread: 25
+  monsterPrefab: {fileID: 7106989139624082494, guid: 7d755240d8b549247bb5845129d34a72, type: 3}
+  batPrefab: {fileID: 6262803650956883851, guid: 8b7c555467aea3e4cb4810c07cd2f97c, type: 3}
+  monsterScaleMultiplier: 50
+  heartSpawnInterval: 8
+--- !u!114 &706847487
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 706847477}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8f9b1c3e4a5d67890123456789abcdef, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  showSkeletonOnMainScreen: 0
+  showStatusBar: 1
+  processingLatencyMs: 0
+  averageFps: 0
+  isHandVisible: 0
+--- !u!114 &706847488
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 706847477}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3e7a1b4c5d6e7f890123456789abcdef, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  fullScreenWebCamOnPC: 1
+  showCrosshair: 0
+  currentScore: 0
+  monstersKilledInLevel: 0
+  totalMonstersPerLevel: 30
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
@@ -668,7 +686,7 @@ MonoBehaviour:
   m_AutoFocus: 1
   m_ImageStabilization: 0
   m_LightEstimation: 0
-  m_FacingDirection: 1
+  m_FacingDirection: 2
   m_RenderMode: 0
 --- !u!81 &1105586631
 AudioListener:

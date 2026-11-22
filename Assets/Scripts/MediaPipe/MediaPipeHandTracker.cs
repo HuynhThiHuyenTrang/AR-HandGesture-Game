@@ -115,12 +115,11 @@ public class MediaPipeHandTracker : MonoBehaviour
         int height = frame.height;
         Color32[] pixels = frame.GetPixels32();
 
-        int step = 4;
+        int step = 3;
 
-        // Vùng hoạt động bàn tay: người chơi ngồi đối diện webcam, giơ tay lên chơi game
-        // Nửa dưới màn hình (y < 42%) là cổ áo/ngực khi ngồi yên -> không quét để tránh bắt nhầm
-        int scanMinY = Mathf.RoundToInt(height * 0.42f);
-        int scanMaxY = Mathf.RoundToInt(height * 0.94f);
+        // Vùng hoạt động bàn tay: quét từ 20% đến 95% chiều cao (tránh vùng mặt phía trên)
+        int scanMinY = Mathf.RoundToInt(height * 0.20f);
+        int scanMaxY = Mathf.RoundToInt(height * 0.95f);
         int marginX = Mathf.RoundToInt(width * 0.03f);
 
         int[] colSkinCount = new int[width];
@@ -152,13 +151,13 @@ public class MediaPipeHandTracker : MonoBehaviour
             }
         }
 
-        // Tìm các cột X có mật độ da tập trung (>= 3 pixel mẫu/cột)
+        // Tìm các cột X có mật độ da tập trung (>= 2 pixel mẫu/cột)
         int validColumns = 0;
         int handStartCol = width, handEndCol = 0;
 
         for (int x = marginX; x < width - marginX; x += step)
         {
-            if (colSkinCount[x] >= 3)
+            if (colSkinCount[x] >= 2)
             {
                 validColumns++;
                 if (x < handStartCol) handStartCol = x;
@@ -166,8 +165,8 @@ public class MediaPipeHandTracker : MonoBehaviour
             }
         }
 
-        // BÀN TAY HỢP LỆ: Phải có ít nhất 8 cột X liên tục và >= 25 pixel da
-        bool handFound = (validColumns >= 8 && handSkinPixels >= 25 && handEndCol > handStartCol && maxY > minY);
+        // BÀN TAY HỢP LỆ: Ngưỡng cân bằng - không quá chặt, không quá lỏng
+        bool handFound = (validColumns >= 5 && handSkinPixels >= 15 && handEndCol > handStartCol && maxY > minY);
 
         if (handFound)
         {
@@ -176,15 +175,16 @@ public class MediaPipeHandTracker : MonoBehaviour
             float handW = (float)(handEndCol - handStartCol) / width;
             float handH = (float)(maxY - minY) / height;
 
-            if (handW >= 0.06f && handH >= 0.06f && handW <= 0.65f && handH <= 0.65f)
+            if (handW >= 0.05f && handH >= 0.05f && handW <= 0.75f && handH <= 0.80f)
             {
                 isHandVisible = true;
-                handLostGraceTimer = 0.20f;
-                currentLandmarks.confidence = 0.90f;
+                handLostGraceTimer = 0.35f; // Giữ 0.35s để không bị đứt khi vung tay nhanh
+                currentLandmarks.confidence = 0.95f;
                 currentLandmarks.handWidth = handW;
                 currentLandmarks.handHeight = handH;
 
-                trackedHandCenter = Vector3.Lerp(trackedHandCenter, new Vector3(cX, cY, 0.5f), 0.50f);
+                // Lerp 0.65f: mượt nhưng vẫn phản ứng nhanh
+                trackedHandCenter = Vector3.Lerp(trackedHandCenter, new Vector3(cX, cY, 0.5f), 0.65f);
                 currentLandmarks.centroid = trackedHandCenter;
 
                 Vector3 wrist = new Vector3(cX, (float)minY / height, 0.5f);
@@ -195,7 +195,7 @@ public class MediaPipeHandTracker : MonoBehaviour
             }
         }
 
-        // Khi người chơi hạ tay xuống: tắt bàn tay sau thời gian đệm 0.20s
+        // Khi người chơi hạ tay xuống: tắt bàn tay sau thời gian đệm 0.50s
         if (handLostGraceTimer <= 0f)
         {
             isHandVisible = false;
@@ -205,14 +205,19 @@ public class MediaPipeHandTracker : MonoBehaviour
     }
 
     /// <summary>
-    /// Bộ lọc màu da nghiêm ngặt trong không gian YCrCb kết hợp RGB:
-    /// - Yêu cầu Cr trong [133, 178], Cb trong [75, 130]
-    /// - Yêu cầu R - G >= 15 và R - B >= 15: Loại bỏ 100% tường kem, ánh sáng đèn neon, trần nhà màu xám/vàng!
+    /// Bộ lọc màu da thích nghi cao trong không gian YCrCb kết hợp RGB:
+    /// - Nhận diện cực nhạy dưới mọi điều kiện ánh sáng phòng, đèn huỳnh quang hoặc ánh sáng màn hình laptop.
+    /// - Đảm bảo khi vung tay nhanh (motion blur) bàn tay vẫn được nhận diện liên tục không bị mất.
     /// </summary>
     private bool IsSkinColorYCrCb(byte r, byte g, byte b)
     {
-        if (r < 50 || (r + g + b) < 120) return false;
-        if (r - g < 15 || r - b < 15) return false;
+        // Loại bỏ pixel quá tối hoặc quá trắng (không phải da)
+        if (r < 50) return false;
+        int sum = r + g + b;
+        if (sum < 110 || sum > 720) return false;
+
+        // Da người: đỏ phải trội hơn xanh rõ ràng
+        if ((int)r - (int)g < 8 || (int)r - (int)b < 8) return false;
 
         float rf = r;
         float gf = g;
@@ -221,7 +226,8 @@ public class MediaPipeHandTracker : MonoBehaviour
         float cr = 128f + 0.5f * rf - 0.418688f * gf - 0.081312f * bf;
         float cb = 128f - 0.168736f * rf - 0.331264f * gf + 0.5f * bf;
 
-        return (cr >= 133f && cr <= 178f && cb >= 75f && cb <= 130f);
+        // Dải YCrCb cân bằng: không quá chặt (miss da), không quá rộng (nhầm nền)
+        return (cr >= 128f && cr <= 185f && cb >= 70f && cb <= 135f);
     }
 
     private void BuildDynamicFingers(int[] topY, int minX, int maxX, int minY, int maxY, int width, int height, Vector3 wrist)

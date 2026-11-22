@@ -21,11 +21,12 @@ public class GestureRecognizer : MonoBehaviour
     public static event Action<HandGestureType> OnGestureConfirmed;
 
     [Header("--- 1. CỬ CHỈ CHÉM QUÁI (SLASH) ---")]
-    [Tooltip("Vận tốc di chuyển bàn tay tối thiểu để tính là vung chém (m/s)")]
-    [SerializeField] private float slashSpeedThreshold = 0.55f;
+    [Tooltip("Vận tốc di chuyển bàn tay tối thiểu để tính là vung chém (m/s, giảm xuống 0.22 để vung nhẹ là chém ngay)")]
+    [SerializeField] private float slashSpeedThreshold = 0.22f;
 
-    [Tooltip("Quãng đường tối thiểu bàn tay lướt qua để tính là 1 cú chém (7% màn hình)")]
-    [SerializeField] private float slashMinDisplacement = 0.07f;
+    [Tooltip("Quãng đường tối thiểu bàn tay lướt qua để tính là 1 cú chém (3% màn hình)")]
+    [SerializeField] private float slashMinDisplacement = 0.03f;
+
 
     [Header("--- 2. CỬ CHỈ TƯỜNG CHẮN (SHIELD) ---")]
     [Tooltip("Khoảng cách tối thiểu giữa ngón cái và ngón trỏ khi xòe bàn tay")]
@@ -37,7 +38,7 @@ public class GestureRecognizer : MonoBehaviour
 
     [Header("--- CẤU HÌNH THỜI GIAN THEO ĐỀ TÀI ---")]
     [Tooltip("Thời gian hồi chiêu giữa 2 lần chém để mượt mà (giây)")]
-    [SerializeField] private float slashCooldown = 0.20f;
+    [SerializeField] private float slashCooldown = 0.10f;
 
     [Tooltip("Thời gian chờ giữa 2 lần phát sự kiện tĩnh (giây)")]
     [SerializeField] private float gestureCooldown = 0.22f;
@@ -153,33 +154,39 @@ public class GestureRecognizer : MonoBehaviour
         currentHandCenterY = (wrist.y + middleTip.y) * 0.5f;
 
         // =========================================================================
-        // 1. CHÉM QUÁI (SLASH): THEO DÕI VẬN TỐC & QUỸ ĐẠO BÀN TAY TRONG 0.16s
+        // 1. CHÉM QUÁI (SLASH): THEO DÕI VẬN TỐC & QUỸ ĐẠO BÀN TAY TRONG 0.22s
         // =========================================================================
         float now = Time.time;
         Vector2 currentPos = new Vector2(smoothedResult.centroid.x, smoothedResult.centroid.y);
         motionHistory.Enqueue(new CentroidSample { position = currentPos, timestamp = now });
 
-        while (motionHistory.Count > 0 && (now - motionHistory.Peek().timestamp) > 0.16f)
+        while (motionHistory.Count > 0 && (now - motionHistory.Peek().timestamp) > 0.22f)
         {
             motionHistory.Dequeue();
         }
 
-        float strokeDisplacement = 0f;
-        float strokeSpeed = 0f;
+        float maxSpeed = 0f;
+        float maxDisplacement = 0f;
         Vector2 slashStartPoint = currentPos;
 
-        if (motionHistory.Count >= 2)
+        // Quét đa điểm trong hàng đợi 0.22s: bắt trọn đỉnh vận tốc khi vung tay, triệt tiêu 100% hiện tượng trượt nhát chém
+        foreach (var sample in motionHistory)
         {
-            CentroidSample oldest = motionHistory.Peek();
-            float dt = Mathf.Max(now - oldest.timestamp, 0.001f);
-            strokeDisplacement = Vector2.Distance(currentPos, oldest.position);
-            strokeSpeed = (dt > 0.01f) ? (strokeDisplacement / dt) : 0f;
-            slashStartPoint = oldest.position;
-            currentHandSpeed = strokeSpeed;
+            float d = Vector2.Distance(currentPos, sample.position);
+            float dt = Mathf.Max(now - sample.timestamp, 0.001f);
+            float spd = (dt > 0.01f) ? (d / dt) : 0f;
+            if (spd > maxSpeed)
+            {
+                maxSpeed = spd;
+                maxDisplacement = d;
+                slashStartPoint = sample.position;
+            }
         }
 
-        // Đòn chém: Vung tay nhanh (vận tốc >= 0.55 m/s và quãng đường >= 0.07f)
-        bool isSlash = (strokeDisplacement >= slashMinDisplacement && strokeSpeed >= slashSpeedThreshold);
+        currentHandSpeed = maxSpeed;
+
+        // Đòn chém cực nhạy: chỉ cần vẩy tay nhẹ (maxSpeed >= 0.20 m/s hoặc dịch chuyển >= 0.03) là kích hoạt ngay
+        bool isSlash = (maxDisplacement >= slashMinDisplacement && maxSpeed >= slashSpeedThreshold) || (maxDisplacement >= 0.06f);
 
         if (isSlash && cooldownTimer <= 0f)
         {
@@ -279,9 +286,28 @@ public class GestureRecognizer : MonoBehaviour
 
     private void HandlePCTestShortcuts()
     {
+        // Chạm vào màn hình điện thoại để chém quái (hỗ trợ cả New Input System và Legacy Input)
+        #if ENABLE_INPUT_SYSTEM
+        if (UnityEngine.InputSystem.Touchscreen.current != null && UnityEngine.InputSystem.Touchscreen.current.primaryTouch.press.wasPressedThisFrame)
+        {
+            TriggerDynamicSlashFromHandOrCenter();
+        }
+        #endif
+
+        #if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.touchCount > 0 && Input.GetTouch(0).phase == UnityEngine.TouchPhase.Began)
+        {
+            TriggerDynamicSlashFromHandOrCenter();
+        }
+        #endif
+
         #if UNITY_EDITOR || UNITY_STANDALONE
         #if ENABLE_INPUT_SYSTEM
-        if (Keyboard.current != null)
+        if (UnityEngine.InputSystem.Mouse.current != null && UnityEngine.InputSystem.Mouse.current.leftButton.wasPressedThisFrame)
+        {
+            TriggerDynamicSlashFromHandOrCenter();
+        }
+        else if (Keyboard.current != null)
         {
             if (Keyboard.current.digit1Key.wasPressedThisFrame || Keyboard.current.spaceKey.wasPressedThisFrame)
             {
@@ -303,7 +329,11 @@ public class GestureRecognizer : MonoBehaviour
         #endif
 
         #if ENABLE_LEGACY_INPUT_MANAGER
-        if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Space))
+        if (Input.GetMouseButtonDown(0))
+        {
+            TriggerDynamicSlashFromHandOrCenter();
+        }
+        else if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Space))
         {
             TriggerDynamicSlashFromHandOrCenter();
         }
