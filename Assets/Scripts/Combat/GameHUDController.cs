@@ -27,6 +27,7 @@ public class GameHUDController : MonoBehaviour
     [Header("--- ĐIỂM SỐ & TIẾN ĐỘ LEVEL (30 QUÁI/LEVEL) ---")]
     [SerializeField] private int currentScore = 0;
     [SerializeField] private int monstersKilledInLevel = 0;
+    [SerializeField] private int totalMonstersKilled = 0;
     [SerializeField] private int totalMonstersPerLevel = 30;
 
     // Hiệu ứng vệt kiếm chém (Slash VFX)
@@ -99,6 +100,15 @@ public class GameHUDController : MonoBehaviour
         return tex;
     }
 
+    private void DrawColorRect(Rect rect, Color col)
+    {
+        if (whiteTex == null) InitTextures();
+        Color prev = GUI.color;
+        GUI.color = col;
+        GUI.DrawTexture(rect, whiteTex);
+        GUI.color = prev;
+    }
+
     public void TriggerSlashFx(Vector2 p1, Vector2 p2, bool isCrit, int combo, bool hit)
     {
         isSlashFxActive = true;
@@ -162,6 +172,7 @@ public class GameHUDController : MonoBehaviour
     public void OnMonsterKilled(MonsterController monster = null)
     {
         monstersKilledInLevel++;
+        totalMonstersKilled++;
         AddScore(100);
 
         Debug.Log($"<color=green><b>[HUD] 💀 ĐÃ TIÊU DIỆT QUÁI VẬT! Tiến độ màn chơi: {monstersKilledInLevel}/{totalMonstersPerLevel}</b></color>");
@@ -299,7 +310,7 @@ public class GameHUDController : MonoBehaviour
         if (damageFlashTimer > 0f)
         {
             float alpha = Mathf.Clamp01((damageFlashTimer / 0.35f) * 0.40f);
-            GUI.DrawTexture(new Rect(0, 0, sw, sh), MakeColorTex(new Color(1f, 0.1f, 0.1f, alpha)));
+            DrawColorRect(new Rect(0, 0, sw, sh), new Color(1f, 0.1f, 0.1f, alpha));
         }
 
         int maxHp = 100;
@@ -325,7 +336,7 @@ public class GameHUDController : MonoBehaviour
         heartStyle.alignment = TextAnchor.MiddleCenter;
         GUI.Label(new Rect(32, 22, 35, 42), "❤️", heartStyle);
 
-        GUI.DrawTexture(new Rect(72, 34, 160, 18), MakeColorTex(new Color(0.1f, 0.1f, 0.1f, 0.9f)));
+        DrawColorRect(new Rect(72, 34, 160, 18), new Color(0.1f, 0.1f, 0.1f, 0.9f));
         if (hpPercent > 0)
         {
             Texture2D barTex = isHeartHealFxActive ? greenTex : redTex;
@@ -489,7 +500,7 @@ public class GameHUDController : MonoBehaviour
     private void DrawSkillButton(Rect rect, string icon, string label, bool isActive, System.Action onClick)
     {
         Color bgColor = isActive ? new Color(0.1f, 0.45f, 0.85f, 0.95f) : new Color(0.05f, 0.15f, 0.25f, 0.75f);
-        GUI.DrawTexture(rect, MakeColorTex(bgColor));
+        DrawColorRect(rect, bgColor);
 
         Color borderColor = isActive ? new Color(1f, 0.9f, 0.2f, 1f) : new Color(0.2f, 0.7f, 1f, 0.8f);
         int borderWidth = isActive ? 3 : 2;
@@ -516,7 +527,7 @@ public class GameHUDController : MonoBehaviour
     private void DrawShieldArcEffect(int sw, int sh)
     {
         // 1. LỚP PHỦ NĂNG LƯỢNG TOÀN MÀN HÌNH (Sci-Fi Hex Forcefield Aura)
-        GUI.DrawTexture(new Rect(0, 0, sw, sh), MakeColorTex(new Color(0.05f, 0.55f, 1f, 0.10f)));
+        DrawColorRect(new Rect(0, 0, sw, sh), new Color(0.05f, 0.55f, 1f, 0.10f));
 
         // 2. KHUNG VIỀN NĂNG LƯỢNG KHIÊN BẢO VỆ PHÁT SÁNG TOÀN MÀN HÌNH
         DrawBorder(new Rect(0, 0, sw, sh), new Color(0.2f, 0.90f, 1f, 0.85f), 3);
@@ -526,9 +537,9 @@ public class GameHUDController : MonoBehaviour
         float barHeight = sh * 0.38f;
         float barY = sh * 0.22f; // từ 22% đến 60% chiều cao màn hình
         Color shieldColor = new Color(0.1f, 0.75f, 1f, 0.40f);
-        GUI.DrawTexture(new Rect(0, barY, barWidth, barHeight), MakeColorTex(shieldColor));
+        DrawColorRect(new Rect(0, barY, barWidth, barHeight), shieldColor);
         Color lineGlow = new Color(0.3f, 0.95f, 1f, 0.95f);
-        GUI.DrawTexture(new Rect(barWidth - 3, barY, 3, barHeight), MakeColorTex(lineGlow));
+        DrawColorRect(new Rect(barWidth - 3, barY, 3, barHeight), lineGlow);
 
         GUIStyle shieldTextStyle = new GUIStyle();
         shieldTextStyle.fontSize = 13;
@@ -556,7 +567,7 @@ public class GameHUDController : MonoBehaviour
         float bannerY = 66f;
 
         Rect bannerRect = new Rect(bannerX, bannerY, bannerW, bannerH);
-        GUI.DrawTexture(bannerRect, MakeColorTex(new Color(0.02f, 0.18f, 0.36f, 0.92f)));
+        DrawColorRect(bannerRect, new Color(0.02f, 0.18f, 0.36f, 0.92f));
         DrawBorder(bannerRect, new Color(0.2f, 0.95f, 1f, 1f), 2);
 
         GUI.Label(bannerRect, shieldText, centerShieldStyle);
@@ -636,7 +647,7 @@ public class GameHUDController : MonoBehaviour
         parryStyle.alignment = TextAnchor.MiddleCenter;
 
         Rect bannerRect = new Rect((sw - 460) / 2f, sh * 0.28f, 460, 50);
-        GUI.DrawTexture(bannerRect, MakeColorTex(new Color(0.02f, 0.15f, 0.30f, alpha * 0.9f)));
+        DrawColorRect(bannerRect, new Color(0.02f, 0.15f, 0.30f, alpha * 0.9f));
         DrawBorder(bannerRect, new Color(0.2f, 0.9f, 1f, alpha), 3);
 
         GUI.Label(bannerRect, "🛡️ PARRY THÀNH CÔNG! QUÁI BỊ CHOÁNG (+50% DMG)!", parryStyle);
@@ -675,7 +686,7 @@ public class GameHUDController : MonoBehaviour
         GUI.Label(new Rect(barX, barY - 24, barW, 20), "👑 TRÙM CUỐI: ĐẠI CHIẾN SLIME CHÚA", bossNameStyle);
 
         float hpPct = Mathf.Clamp01((float)boss.GetCurrentHealth() / boss.GetMaxHealth());
-        GUI.DrawTexture(new Rect(barX, barY, barW, barH), MakeColorTex(new Color(0.15f, 0.15f, 0.15f, 0.9f)));
+        DrawColorRect(new Rect(barX, barY, barW, barH), new Color(0.15f, 0.15f, 0.15f, 0.9f));
         if (hpPct > 0)
         {
             GUI.DrawTexture(new Rect(barX + 2, barY + 2, (barW - 4) * hpPct, barH - 4), goldTex);
@@ -700,7 +711,7 @@ public class GameHUDController : MonoBehaviour
         itemStyle.alignment = TextAnchor.MiddleCenter;
 
         Rect bannerRect = new Rect((sw - 360) / 2f, sh * 0.58f, 360, 42);
-        GUI.DrawTexture(bannerRect, MakeColorTex(new Color(0.05f, 0.15f, 0.25f, alpha * 0.8f)));
+        DrawColorRect(bannerRect, new Color(0.05f, 0.15f, 0.25f, alpha * 0.8f));
         DrawBorder(bannerRect, new Color(1f, 0.85f, 0.2f, alpha), 2);
 
         GUI.Label(bannerRect, "💎 ĐÃ LẤY VẬT PHẨM (+50 ĐIỂM)!", itemStyle);
@@ -717,7 +728,7 @@ public class GameHUDController : MonoBehaviour
         healStyle.alignment = TextAnchor.MiddleCenter;
 
         Rect bannerRect = new Rect((sw - 420) / 2f, sh * 0.50f, 420, 48);
-        GUI.DrawTexture(bannerRect, MakeColorTex(new Color(0.04f, 0.22f, 0.12f, alpha * 0.9f)));
+        DrawColorRect(bannerRect, new Color(0.04f, 0.22f, 0.12f, alpha * 0.9f));
         DrawBorder(bannerRect, new Color(0.2f, 1f, 0.45f, alpha), 3);
 
         GUI.Label(bannerRect, $"❤️ +{lastHealAmount} HP (HỒI MÁU THÀNH CÔNG!)", healStyle);
@@ -728,25 +739,24 @@ public class GameHUDController : MonoBehaviour
         float ringRadius = 24f;
         DrawCircleHollow(cx, cy, ringRadius, new Color(1f, 1f, 1f, 0.65f), 1.5f);
 
-        GUI.DrawTexture(new Rect(cx - 2, cy - 2, 4, 4), MakeColorTex(new Color(1f, 0.3f, 0.3f, 0.9f)));
+        DrawColorRect(new Rect(cx - 2, cy - 2, 4, 4), new Color(1f, 0.3f, 0.3f, 0.9f));
 
         float crossLength = 10f;
         float gap = 28f;
         Color crossCol = new Color(1f, 1f, 1f, 0.75f);
 
-        GUI.DrawTexture(new Rect(cx, cy - gap - crossLength, 2, crossLength), MakeColorTex(crossCol));
-        GUI.DrawTexture(new Rect(cx, cy + gap, 2, crossLength), MakeColorTex(crossCol));
-        GUI.DrawTexture(new Rect(cx - gap - crossLength, cy, crossLength, 2), MakeColorTex(crossCol));
-        GUI.DrawTexture(new Rect(cx + gap, cy, crossLength, 2), MakeColorTex(crossCol));
+        DrawColorRect(new Rect(cx, cy - gap - crossLength, 2, crossLength), crossCol);
+        DrawColorRect(new Rect(cx, cy + gap, 2, crossLength), crossCol);
+        DrawColorRect(new Rect(cx - gap - crossLength, cy, crossLength, 2), crossCol);
+        DrawColorRect(new Rect(cx + gap, cy, crossLength, 2), crossCol);
     }
 
     private void DrawBorder(Rect r, Color col, int thickness)
     {
-        Texture2D t = MakeColorTex(col);
-        GUI.DrawTexture(new Rect(r.x, r.y, r.width, thickness), t);
-        GUI.DrawTexture(new Rect(r.x, r.y + r.height - thickness, r.width, thickness), t);
-        GUI.DrawTexture(new Rect(r.x, r.y, thickness, r.height), t);
-        GUI.DrawTexture(new Rect(r.x + r.width - thickness, r.y, thickness, r.height), t);
+        DrawColorRect(new Rect(r.x, r.y, r.width, thickness), col);
+        DrawColorRect(new Rect(r.x, r.y + r.height - thickness, r.width, thickness), col);
+        DrawColorRect(new Rect(r.x, r.y, thickness, r.height), col);
+        DrawColorRect(new Rect(r.x + r.width - thickness, r.y, thickness, r.height), col);
     }
 
     private void DrawCircleHollow(float cx, float cy, float radius, Color col, float thickness)
@@ -771,7 +781,7 @@ public class GameHUDController : MonoBehaviour
         float length = d.magnitude;
 
         GUIUtility.RotateAroundPivot(angle, p1);
-        GUI.DrawTexture(new Rect(p1.x, p1.y - width / 2f, length, width), MakeColorTex(col));
+        DrawColorRect(new Rect(p1.x, p1.y - width / 2f, length, width), col);
         GUIUtility.RotateAroundPivot(-angle, p1);
     }
 
@@ -783,7 +793,7 @@ public class GameHUDController : MonoBehaviour
         float bannerY = (sh - bannerH) / 2f;
 
         // Khung nền đen Sci-Fi viền xanh vàng
-        GUI.DrawTexture(new Rect(bannerX, bannerY, bannerW, bannerH), MakeColorTex(new Color(0.02f, 0.08f, 0.18f, 0.95f)));
+        DrawColorRect(new Rect(bannerX, bannerY, bannerW, bannerH), new Color(0.02f, 0.08f, 0.18f, 0.95f));
         DrawBorder(new Rect(bannerX, bannerY, bannerW, bannerH), new Color(0.2f, 0.9f, 1f, 1f), 3);
         DrawBorder(new Rect(bannerX + 4, bannerY + 4, bannerW - 8, bannerH - 8), new Color(1f, 0.85f, 0.2f, 0.7f), 1);
 
@@ -835,7 +845,7 @@ public class GameHUDController : MonoBehaviour
         float bannerX = (sw - bannerW) / 2f;
         float bannerY = (sh - bannerH) / 2f;
 
-        GUI.DrawTexture(new Rect(bannerX, bannerY, bannerW, bannerH), MakeColorTex(new Color(0.08f, 0.02f, 0.15f, 0.96f)));
+        DrawColorRect(new Rect(bannerX, bannerY, bannerW, bannerH), new Color(0.08f, 0.02f, 0.15f, 0.96f));
         DrawBorder(new Rect(bannerX, bannerY, bannerW, bannerH), new Color(1f, 0.85f, 0.2f, 1f), 4);
 
         GUIStyle vicTitle = new GUIStyle();
@@ -872,4 +882,7 @@ public class GameHUDController : MonoBehaviour
             default: return 5.0f;
         }
     }
+
+    public int GetScore() => currentScore;
+    public int GetTotalMonstersKilled() => totalMonstersKilled;
 }

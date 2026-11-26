@@ -15,7 +15,7 @@ public class CollectibleHeart : MonoBehaviour
     [SerializeField] private int healAmount = 30;
 
     [Tooltip("Thời gian tồn tại tối đa trước khi tự biến mất (giây)")]
-    [SerializeField] private float lifetime = 25.0f;
+    [SerializeField] private float lifetime = 3.0f;
 
     [Header("--- HIỆU ỨNG CHUYỂN ĐỘNG ---")]
     [SerializeField] private float rotationSpeed = 90.0f;
@@ -54,20 +54,13 @@ public class CollectibleHeart : MonoBehaviour
     void OnTriggerEnter(Collider other)
     {
         if (isBeingCollected) return;
-        PlayerCombatController player = other.GetComponentInParent<PlayerCombatController>();
-        if (player == null) player = PlayerCombatController.Instance;
-        if (player != null)
+        // Chỉ ăn tim khi người chơi cầm điện thoại di chuyển lại gần chạm trực tiếp vào quả tim
+        if (other.CompareTag("MainCamera") || other.GetComponentInParent<PlayerCombatController>() != null)
         {
-            Collect(player);
-        }
-    }
-
-    void OnMouseDown()
-    {
-        if (isBeingCollected) return;
-        if (PlayerCombatController.Instance != null)
-        {
-            Collect(PlayerCombatController.Instance);
+            if (PlayerCombatController.Instance != null)
+            {
+                Collect(PlayerCombatController.Instance);
+            }
         }
     }
 

@@ -1,0 +1,2 @@
+username=HuyenTrang
+key=your_adafruit_io_key_here

@@ -361,7 +361,7 @@ public class MediaPipeHandTracker : MonoBehaviour
             HandGestureType g = GestureRecognizer.Instance.GetCurrentConfirmedGesture();
             if (g == HandGestureType.Slash) gestureText = " | <color=#ff3333><b>⚔️ CHÉM QUÁI!</b></color>";
             else if (g == HandGestureType.OpenPalm) gestureText = " | <color=#00e5ff><b>🛡️ TƯỜNG CHẮN</b></color>";
-            else if (g == HandGestureType.Grab) gestureText = " | <color=#ffaa00><b>✊ LẤY VẬT PHẨM</b></color>";
+            else if (g == HandGestureType.Grab) gestureText = " | <color=#ffaa00><b>✊ CHẾ ĐỘ NHẶT TIM</b></color>";
         }
         else if (!isHandVisible)
         {
@@ -376,8 +376,7 @@ public class MediaPipeHandTracker : MonoBehaviour
         float bannerX = (sw - bannerW) / 2f;
         float bannerY = Screen.height - 35;
 
-        Texture2D bg = MakeSolidTex(new Color(0.04f, 0.12f, 0.22f, 0.90f));
-        GUI.DrawTexture(new Rect(bannerX, bannerY, bannerW, bannerH), bg);
+        DrawColorRect(new Rect(bannerX, bannerY, bannerW, bannerH), new Color(0.04f, 0.12f, 0.22f, 0.90f));
         GUI.Label(new Rect(bannerX, bannerY, bannerW, bannerH), text, style);
     }
 
@@ -388,21 +387,29 @@ public class MediaPipeHandTracker : MonoBehaviour
         float length = d.magnitude;
 
         GUIUtility.RotateAroundPivot(angle, p1);
-        GUI.DrawTexture(new Rect(p1.x, p1.y - width / 2f, length, width), MakeSolidTex(col));
+        DrawColorRect(new Rect(p1.x, p1.y - width / 2f, length, width), col);
         GUIUtility.RotateAroundPivot(-angle, p1);
     }
 
     private void DrawCircle(Vector2 center, float radius, Color col)
     {
-        GUI.DrawTexture(new Rect(center.x - radius, center.y - radius, radius * 2, radius * 2), MakeSolidTex(col));
+        DrawColorRect(new Rect(center.x - radius, center.y - radius, radius * 2, radius * 2), col);
     }
 
-    private Texture2D MakeSolidTex(Color c)
+    private Texture2D cachedWhiteTex;
+
+    private void DrawColorRect(Rect rect, Color c)
     {
-        Texture2D t = new Texture2D(1, 1);
-        t.SetPixel(0, 0, c);
-        t.Apply();
-        return t;
+        if (cachedWhiteTex == null)
+        {
+            cachedWhiteTex = new Texture2D(1, 1);
+            cachedWhiteTex.SetPixel(0, 0, Color.white);
+            cachedWhiteTex.Apply();
+        }
+        Color prev = GUI.color;
+        GUI.color = c;
+        GUI.DrawTexture(rect, cachedWhiteTex);
+        GUI.color = prev;
     }
 
     public HandLandmarkResult GetCurrentLandmarks() => currentLandmarks;

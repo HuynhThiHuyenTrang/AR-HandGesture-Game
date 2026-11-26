@@ -1,0 +1,9 @@
+services:
+  adafruit-bridge:
+    build: .
+    container_name: ar-monster-adafruit-bridge
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env

@@ -28,3 +28,6 @@
 
 .DS_Store
 Thumbs.db
+DockerBridge/.env
+Assets/Resources/adafruit_config.txt
+Assets/Resources/adafruit_config.txt.meta

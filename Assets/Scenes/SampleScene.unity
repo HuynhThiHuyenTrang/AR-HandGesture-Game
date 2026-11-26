@@ -358,11 +358,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a1d0275ddce95a04d937ca4d33ef7266, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  slashSpeedThreshold: 0.18
-  slashMinDisplacement: 0.025
+  slashSpeedThreshold: 0.4
+  slashMinDisplacement: 0.1
   openPalmMinPinch: 0.075
   pinchDistanceThreshold: 0.08
-  slashCooldown: 0.08
+  slashCooldown: 0.2
   gestureCooldown: 0.35
   confidenceThreshold: 0.5
   detectedCandidate: 0

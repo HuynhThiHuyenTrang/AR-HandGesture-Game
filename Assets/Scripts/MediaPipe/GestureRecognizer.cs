@@ -11,8 +11,8 @@ using UnityEngine.InputSystem;
 ///    - Tia kiếm chém xuất hiện chuẩn 100% theo vệt tay lướt.
 /// 2. TƯỜNG CHẮN (Shield / OpenPalm): Thẳng bàn tay mở giơ cao trước camera.
 ///    - Bật ngay sau 0.05s, duy trì khiên liên tục khi còn giơ tay, tự tắt khi hạ tay xuống.
-/// 3. LẤY VẬT PHẨM (Grab / Fist): Nắm tay lại hoặc chụm các ngón tay.
-///    - Hút toàn bộ trái tim hồi máu rơi xung quanh về người chơi (+30 HP).
+/// 3. LẤY VẬT PHẨM (Grab / Pinch): Chỉ chụm đầu ngón cái và ngón trỏ.
+///    - Phải giữ tư thế chụm ổn định mới hút trái tim hồi máu.
 /// </summary>
 public class GestureRecognizer : MonoBehaviour
 {
@@ -21,11 +21,11 @@ public class GestureRecognizer : MonoBehaviour
     public static event Action<HandGestureType> OnGestureConfirmed;
 
     [Header("--- 1. CỬ CHỈ CHÉM QUÁI (SLASH) ---")]
-    [Tooltip("Vận tốc di chuyển bàn tay tối thiểu để tính là vung chém (m/s, giảm xuống 0.22 để vung nhẹ là chém ngay)")]
-    [SerializeField] private float slashSpeedThreshold = 0.22f;
+    [Tooltip("Vận tốc di chuyển bàn tay tối thiểu để tính là vung chém (m/s)")]
+    [SerializeField] private float slashSpeedThreshold = 0.40f;
 
-    [Tooltip("Quãng đường tối thiểu bàn tay lướt qua để tính là 1 cú chém (3% màn hình)")]
-    [SerializeField] private float slashMinDisplacement = 0.03f;
+    [Tooltip("Quãng đường tối thiểu bàn tay lướt qua để tính là 1 cú chém (10% màn hình, tránh chụm tay bị nhầm thành chém)")]
+    [SerializeField] private float slashMinDisplacement = 0.10f;
 
 
     [Header("--- 2. CỬ CHỈ TƯỜNG CHẮN (SHIELD) ---")]
@@ -68,6 +68,10 @@ public class GestureRecognizer : MonoBehaviour
     private HandLandmarkResult smoothedResult = new HandLandmarkResult();
     private float trackingLostTimer = 0f;
     private bool isHoldingObject = false;
+    private float lastStaticCheckTime = -1f;
+
+    // Sau khi chém, yêu cầu mở tay ra rồi mới được chụm để hút tim.
+    private bool grabNeedsReleaseAfterSlash = false;
 
     // Toạ độ thực tế của vệt vung tay chém mới nhất (chuẩn hóa 0..1)
     private Vector2 lastSlashStart = new Vector2(0.28f, 0.70f);
@@ -153,6 +157,12 @@ public class GestureRecognizer : MonoBehaviour
         currentPinchDistance = Vector3.Distance(thumbTip, indexTip);
         currentHandCenterY = (wrist.y + middleTip.y) * 0.5f;
 
+        // Chỉ mở khóa Grab khi người chơi đã mở ngón cái và ngón trỏ ra.
+        if (currentPinchDistance > pinchDistanceThreshold * 1.35f)
+        {
+            grabNeedsReleaseAfterSlash = false;
+        }
+
         // =========================================================================
         // 1. CHÉM QUÁI (SLASH): THEO DÕI VẬN TỐC & QUỸ ĐẠO BÀN TAY TRONG 0.22s
         // =========================================================================
@@ -185,15 +195,16 @@ public class GestureRecognizer : MonoBehaviour
 
         currentHandSpeed = maxSpeed;
 
-        // Đòn chém cực nhạy: chỉ cần vẩy tay nhẹ (maxSpeed >= 0.20 m/s hoặc dịch chuyển >= 0.03) là kích hoạt ngay
-        bool isSlash = (maxDisplacement >= slashMinDisplacement && maxSpeed >= slashSpeedThreshold) || (maxDisplacement >= 0.06f);
+        // Đòn chém cần có cả vận tốc vung tay (maxSpeed >= slashSpeedThreshold) VÀ quãng đường lướt thực sự (>= slashMinDisplacement)
+        // Không kích hoạt chém chỉ vì chụm/nắm ngón tay tại chỗ làm dịch nhẹ trọng tâm
+        bool isSlash = (maxDisplacement >= slashMinDisplacement && maxSpeed >= slashSpeedThreshold);
 
         if (isSlash && cooldownTimer <= 0f)
         {
             lastSlashStart = slashStartPoint;
             lastSlashEnd = currentPos;
             ConfirmGesture(HandGestureType.Slash);
-            cooldownTimer = slashCooldown;
+            cooldownTimer = Mathf.Max(slashCooldown, 0.25f); // Khóa 0.25s sau cú chém để vệt tay chém không bị nhận nhầm thành chụm tay
             motionHistory.Clear();
             detectedCandidate = HandGestureType.None;
             candidateDuration = 0f;
@@ -201,9 +212,13 @@ public class GestureRecognizer : MonoBehaviour
         }
 
         // =========================================================================
-        // 2. CỬ CHỈ TĨNH: KHI BÀN TAY DI CHUYỂN BÌNH THƯỜNG / ĐỨNG YÊN (SPEED < 0.45 m/s)
+        // 2. CỬ CHỈ TĨNH: XÉT KHI BÀN TAY KHÔNG VUNG CHÉM (SPEED < 0.35 m/s & DỊCH CHUYỂN < 0.045)
+        // Cho phép rung nhẹ 1-2 pixel của camera nhưng vẫn khóa hoàn toàn khi đang vung tay chém!
         // =========================================================================
-        if (currentHandSpeed < 0.45f)
+        float dtStatic = (lastStaticCheckTime > 0f) ? Mathf.Clamp(now - lastStaticCheckTime, 0f, 0.2f) : 0.033f;
+        lastStaticCheckTime = now;
+
+        if (currentHandSpeed < 0.35f && maxDisplacement < 0.045f)
         {
             float handW = smoothedResult.handWidth;
             float handH = smoothedResult.handHeight;
@@ -211,10 +226,10 @@ public class GestureRecognizer : MonoBehaviour
 
             HandGestureType staticGesture = HandGestureType.None;
 
-            // LẤY TIM / VẬT PHẨM (GRAB): Chụm ngón tay hoặc nắm tay lại
-            bool isGrab = (currentPinchDistance <= pinchDistanceThreshold) || 
-                          (handH < 0.18f && handW < 0.28f) || 
-                          (ratio < 0.75f);
+            // LẤY TIM (GRAB): Nhận khi chụm ngón cái-trỏ (<= 0.095) HOẶC nắm tay gọn (tỉ lệ vuông, không dẹt ngang như khi chém)
+            bool isPinching = currentPinchDistance > 0.001f && currentPinchDistance <= 0.095f;
+            bool isCompactFist = (handW <= 0.23f && handH <= 0.23f && ratio >= 0.78f && ratio <= 1.45f);
+            bool isGrab = isPinching || isCompactFist;
 
             // TƯỜNG CHẮN (SHIELD): Thẳng bàn tay mở giơ cao
             bool isOpenPalm = !isGrab && (handW >= 0.08f && handH >= 0.08f) && 
@@ -231,13 +246,15 @@ public class GestureRecognizer : MonoBehaviour
 
             if (staticGesture == detectedCandidate && staticGesture != HandGestureType.None)
             {
-                candidateDuration += Time.deltaTime;
-                float reqDuration = (staticGesture == HandGestureType.OpenPalm) ? 0.05f : 0.08f;
+                candidateDuration += dtStatic;
+                // Giữ chụm/nắm tay 0.12 giây là vào chế độ Nhặt Tim ngay
+                float reqDuration = (staticGesture == HandGestureType.Grab) ? 0.12f : 0.06f;
 
                 if (candidateDuration >= reqDuration && cooldownTimer <= 0f)
                 {
                     ConfirmGesture(staticGesture);
                     candidateDuration = 0f;
+                    cooldownTimer = 0.20f;
                 }
             }
             else
@@ -245,6 +262,11 @@ public class GestureRecognizer : MonoBehaviour
                 detectedCandidate = staticGesture;
                 candidateDuration = 0f;
             }
+        }
+        else
+        {
+            detectedCandidate = HandGestureType.None;
+            candidateDuration = 0f;
         }
     }
 
@@ -269,6 +291,8 @@ public class GestureRecognizer : MonoBehaviour
 
         if (gesture == HandGestureType.Slash)
         {
+            // Khóa Grab sau khi chém; chỉ mở khóa khi người chơi mở tay ra.
+            grabNeedsReleaseAfterSlash = true;
             Debug.Log($"<color=red><b>[GestureRecognizer] ⚔️ ĐÃ NHẬN DIỆN CHÉM QUÁI!</b> Vận tốc: {currentHandSpeed:F2} m/s</color>");
         }
         else if (gesture == HandGestureType.OpenPalm)
@@ -278,7 +302,7 @@ public class GestureRecognizer : MonoBehaviour
         else if (gesture == HandGestureType.Grab)
         {
             isHoldingObject = true;
-            Debug.Log($"<color=orange><b>[GestureRecognizer] ✊ ĐÃ LẤY VẬT PHẨM / TRÁI TIM!</b> Chụm ngón tay hoặc nắm tay</color>");
+            Debug.Log($"<color=orange><b>[GestureRecognizer] ✊ ĐÃ LẤY VẬT PHẨM / TRÁI TIM!</b> Chụm ngón cái và ngón trỏ</color>");
         }
 
         OnGestureConfirmed?.Invoke(gesture);

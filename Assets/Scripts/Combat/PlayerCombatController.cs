@@ -37,6 +37,7 @@ public class PlayerCombatController : MonoBehaviour
 
     [Header("--- HỆ THỐNG COMBO & CHÍ MẠNG ---")]
     [SerializeField] private int comboCount = 0;
+    [SerializeField] private int maxComboCount = 0;
     [SerializeField] private float comboWindow = 2.5f;
     private float lastSlashHitTime = -10f;
 
@@ -140,6 +141,7 @@ public class PlayerCombatController : MonoBehaviour
         {
             comboCount = 1;
         }
+        if (comboCount > maxComboCount) maxComboCount = comboCount;
 
         // Tính tỉ lệ Chí Mạng (Critical Hit): Cơ bản 15% + 5% mỗi nấc combo (tối đa 60%)
         float critChance = 0.15f + comboCount * 0.05f;
@@ -259,14 +261,8 @@ public class PlayerCombatController : MonoBehaviour
         }
         else
         {
-            itemsCollected++;
-            Debug.Log($"<color=orange><b>[Combat] ✊ ĐÃ CHỤM TAY LẤY VẬT PHẨM! Tổng vật phẩm: {itemsCollected}</b></color>");
-
-            if (GameHUDController.Instance != null)
-            {
-                GameHUDController.Instance.AddScore(50);
-                GameHUDController.Instance.TriggerItemPickupFx();
-            }
+            // Không có trái tim nào xung quanh -> Không kích hoạt nhặt ảo, không cộng điểm ảo
+            Debug.Log("<color=gray>[Combat] ✊ Cử chỉ chụm tay: Không có trái tim nào trong tầm hút.</color>");
         }
     }
 
@@ -340,6 +336,7 @@ public class PlayerCombatController : MonoBehaviour
     }
 
     public int GetComboCount() => comboCount;
+    public int GetMaxComboCount() => maxComboCount;
 
     public bool IsShieldActive() => isShieldActive;
     public int GetCurrentHealth() => currentHealth;
