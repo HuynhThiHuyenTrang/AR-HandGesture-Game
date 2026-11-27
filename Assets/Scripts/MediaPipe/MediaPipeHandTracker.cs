@@ -34,6 +34,43 @@ public class MediaPipeHandTracker : MonoBehaviour
     private float handLostGraceTimer = 0f;
     private Vector3 trackedHandCenter = Vector3.zero;
 
+    // Bộ đệm tái sử dụng hoàn toàn để không cấp phát rác GC mỗi frame
+    private const int GRID_W = 40;
+    private const int GRID_H = 30;
+    private const int GRID_SIZE = GRID_W * GRID_H;
+
+    private Color32[] fallbackPixelBuffer;
+    private Color32[] prevPixelBuffer;
+    private bool hasPrevPixelFrame = false;
+    private readonly int[] gridSkinCount = new int[GRID_SIZE];
+    private readonly int[] gridMovingCount = new int[GRID_SIZE];
+    private readonly int[] gridBlobId = new int[GRID_SIZE];
+    private readonly int[] bfsQueue = new int[GRID_SIZE];
+    private int[] topYInColumn;
+    private float lastHandMotionTime = -10f;
+    private bool hasKnownFace = false;
+    private Vector2 knownFacePos = Vector2.zero;
+    private float knownFaceW = 0f;
+    private float knownFaceH = 0f;
+    private float idleStaticBlobTimer = 0f;
+    private Vector2 idleStaticBlobPos = Vector2.zero;
+    private GUIStyle cachedStatusStyle;
+
+    private struct SkinBlob2D
+    {
+        public int blobId;
+        public int cellCount;
+        public int skinPixels;
+        public int movingPixels;
+        public int minGx;
+        public int maxGx;
+        public int minGy;
+        public int maxGy;
+        public float centerX;
+        public float centerY;
+    }
+    private readonly SkinBlob2D[] detectedBlobs = new SkinBlob2D[24];
+
     private static readonly int[,] BoneConnections = new int[,]
     {
         { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 },
@@ -54,11 +91,13 @@ public class MediaPipeHandTracker : MonoBehaviour
 
     void OnEnable()
     {
+        ARCameraStreamBridge.OnCameraPixelsReady += HandleCameraPixels;
         ARCameraStreamBridge.OnCameraFrameReady += HandleCameraFrame;
     }
 
     void OnDisable()
     {
+        ARCameraStreamBridge.OnCameraPixelsReady -= HandleCameraPixels;
         ARCameraStreamBridge.OnCameraFrameReady -= HandleCameraFrame;
     }
 
@@ -85,6 +124,26 @@ public class MediaPipeHandTracker : MonoBehaviour
         }
     }
 
+    private void HandleCameraPixels(Color32[] pixels, int width, int height)
+    {
+        if (pixels == null || width <= 0 || height <= 0 || pixels.Length < width * height)
+            return;
+
+        float startTime = Time.realtimeSinceStartup;
+
+        bool foundFresh = ExtractHandLandmarksFromPixels(pixels, width, height);
+
+        processingLatencyMs = (Time.realtimeSinceStartup - startTime) * 1000f;
+
+        if (GestureRecognizer.Instance != null)
+        {
+            if (foundFresh)
+                GestureRecognizer.Instance.ProcessLandmarks(currentLandmarks);
+            else if (!isHandVisible)
+                GestureRecognizer.Instance.NotifyHandLost();
+        }
+    }
+
     private void HandleCameraFrame(Texture2D frame)
     {
         if (frame == null)
@@ -93,141 +152,439 @@ public class MediaPipeHandTracker : MonoBehaviour
         float startTime = Time.realtimeSinceStartup;
         currentFrameTexture = frame;
 
-        ExtractHandLandmarks(frame);
+        int width = frame.width;
+        int height = frame.height;
+        int len = width * height;
+        if (fallbackPixelBuffer == null || fallbackPixelBuffer.Length != len)
+        {
+            fallbackPixelBuffer = new Color32[len];
+        }
+
+        // Tránh cấp phát mảng Color32 mới: nếu là RGBA32 thì copy trực tiếp từ raw texture data
+        if (frame.format == TextureFormat.RGBA32)
+        {
+            frame.GetRawTextureData<Color32>().CopyTo(fallbackPixelBuffer);
+        }
+        else
+        {
+            Color32[] tmp = frame.GetPixels32();
+            Array.Copy(tmp, fallbackPixelBuffer, Mathf.Min(tmp.Length, len));
+        }
+
+        bool foundFresh = ExtractHandLandmarksFromPixels(fallbackPixelBuffer, width, height);
 
         processingLatencyMs = (Time.realtimeSinceStartup - startTime) * 1000f;
 
-        if (GestureRecognizer.Instance != null && isHandVisible)
+        if (GestureRecognizer.Instance != null)
         {
-            GestureRecognizer.Instance.ProcessLandmarks(currentLandmarks);
+            if (foundFresh)
+                GestureRecognizer.Instance.ProcessLandmarks(currentLandmarks);
+            else if (!isHandVisible)
+                GestureRecognizer.Instance.NotifyHandLost();
         }
     }
 
     /// <summary>
-    /// Trích xuất vị trí bàn tay giơ lên trước camera bằng phân đoạn màu da & hình thái học:
-    /// - Quét vùng hoạt động Y >= 42% (vùng người chơi giơ tay lên ngực/mặt/mắt).
-    /// - Loại bỏ viền mép để triệt tiêu nhiễu camera.
-    /// - Đo đạc cột X có mật độ pixel da cao để xác định chính xác chiều rộng và trọng tâm bàn tay.
+    /// Trích xuất bàn tay bằng lưới 2D Connected-Components (40x30) kết hợp bản đồ chuyển động:
+    /// - Tách biệt hoàn toàn bàn tay và khuôn mặt theo cả chiều ngang X lẫn chiều dọc Y.
+    /// - Khi vung tay chém, tâm điểm chuyển động (moving-skin) bám 1:1 theo bàn tay không trễ.
+    /// - Không cấp phát bộ nhớ tạm (Zero-GC).
     /// </summary>
-    private void ExtractHandLandmarks(Texture2D frame)
+    private bool ExtractHandLandmarksFromPixels(Color32[] pixels, int width, int height)
     {
-        int width = frame.width;
-        int height = frame.height;
-        Color32[] pixels = frame.GetPixels32();
+        int step = 2;
 
-        int step = 3;
+        int scanMinY = Mathf.RoundToInt(height * 0.08f);
+        int scanMaxY = Mathf.RoundToInt(height * 0.96f);
+        int marginX = Mathf.RoundToInt(width * 0.02f);
 
-        // Vùng hoạt động bàn tay: quét từ 20% đến 95% chiều cao (tránh vùng mặt phía trên)
-        int scanMinY = Mathf.RoundToInt(height * 0.20f);
-        int scanMaxY = Mathf.RoundToInt(height * 0.95f);
-        int marginX = Mathf.RoundToInt(width * 0.03f);
+        int len = width * height;
+        if (prevPixelBuffer == null || prevPixelBuffer.Length != len)
+        {
+            prevPixelBuffer = new Color32[len];
+            hasPrevPixelFrame = false;
+        }
 
-        int[] colSkinCount = new int[width];
-        int[] topYInColumn = new int[width];
-        for (int i = 0; i < width; i++) topYInColumn[i] = -1;
+        if (topYInColumn == null || topYInColumn.Length != width)
+        {
+            topYInColumn = new int[width];
+        }
 
-        long sumX = 0, sumY = 0;
-        int handSkinPixels = 0;
-        int minY = height, maxY = 0;
+        Array.Clear(gridSkinCount, 0, GRID_SIZE);
+        Array.Clear(gridMovingCount, 0, GRID_SIZE);
+        Array.Clear(gridBlobId, 0, GRID_SIZE);
+
+        long moveSumX = 0;
+        long moveSumY = 0;
+        int moveSkinTotal = 0;
 
         for (int y = scanMinY; y < scanMaxY; y += step)
         {
             int row = y * width;
+            int gy = (y * GRID_H) / height;
+            if (gy >= GRID_H) gy = GRID_H - 1;
+            int gRow = gy * GRID_W;
+
             for (int x = marginX; x < width - marginX; x += step)
             {
-                Color32 cur = pixels[row + x];
+                int idx = row + x;
+                Color32 cur = pixels[idx];
+                Color32 prev = prevPixelBuffer[idx];
+                prevPixelBuffer[idx] = cur;
+
                 if (IsSkinColorYCrCb(cur.r, cur.g, cur.b))
                 {
-                    colSkinCount[x]++;
-                    if (y > topYInColumn[x]) topYInColumn[x] = y;
+                    int gx = (x * GRID_W) / width;
+                    if (gx >= GRID_W) gx = GRID_W - 1;
+                    int cell = gRow + gx;
+                    gridSkinCount[cell]++;
 
-                    sumX += x;
-                    sumY += y;
-                    handSkinPixels++;
-
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
+                    if (hasPrevPixelFrame)
+                    {
+                        int dr = cur.r - prev.r; if (dr < 0) dr = -dr;
+                        int dg = cur.g - prev.g; if (dg < 0) dg = -dg;
+                        int db = cur.b - prev.b; if (db < 0) db = -db;
+                        if (dr + dg + db > 34)
+                        {
+                            gridMovingCount[cell]++;
+                            moveSumX += x;
+                            moveSumY += y;
+                            moveSkinTotal++;
+                        }
+                    }
                 }
             }
         }
+        hasPrevPixelFrame = true;
 
-        // Tìm các cột X có mật độ da tập trung (>= 2 pixel mẫu/cột)
-        int validColumns = 0;
-        int handStartCol = width, handEndCol = 0;
-
-        for (int x = marginX; x < width - marginX; x += step)
+        // Phân cụm 2D (8-connected BFS) trên lưới 40x30
+        int blobCount = 0;
+        for (int startCell = 0; startCell < GRID_SIZE; startCell++)
         {
-            if (colSkinCount[x] >= 2)
+            if (gridSkinCount[startCell] < 2 || gridBlobId[startCell] != 0)
+                continue;
+
+            int newBlobId = blobCount + 1;
+            int qHead = 0, qTail = 0;
+            bfsQueue[qTail++] = startCell;
+            gridBlobId[startCell] = newBlobId;
+
+            int cellCount = 0;
+            int skinSum = 0;
+            int movingSum = 0;
+            int minGx = GRID_W, maxGx = 0, minGy = GRID_H, maxGy = 0;
+            long cellWeightedGx = 0, cellWeightedGy = 0;
+
+            while (qHead < qTail)
             {
-                validColumns++;
-                if (x < handStartCol) handStartCol = x;
-                if (x > handEndCol) handEndCol = x;
+                int c = bfsQueue[qHead++];
+                int cgx = c % GRID_W;
+                int cgy = c / GRID_W;
+                int sc = gridSkinCount[c];
+
+                cellCount++;
+                skinSum += sc;
+                movingSum += gridMovingCount[c];
+                cellWeightedGx += (long)cgx * sc;
+                cellWeightedGy += (long)cgy * sc;
+
+                if (cgx < minGx) minGx = cgx;
+                if (cgx > maxGx) maxGx = cgx;
+                if (cgy < minGy) minGy = cgy;
+                if (cgy > maxGy) maxGy = cgy;
+
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    int ny = cgy + dy;
+                    if (ny < 0 || ny >= GRID_H) continue;
+                    int nRow = ny * GRID_W;
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = cgx + dx;
+                        if (nx < 0 || nx >= GRID_W) continue;
+                        int nc = nRow + nx;
+                        if (gridSkinCount[nc] >= 2 && gridBlobId[nc] == 0)
+                        {
+                            gridBlobId[nc] = newBlobId;
+                            bfsQueue[qTail++] = nc;
+                        }
+                    }
+                }
+            }
+
+            if (cellCount >= 3 && skinSum >= 14 && blobCount < detectedBlobs.Length)
+            {
+                detectedBlobs[blobCount++] = new SkinBlob2D
+                {
+                    blobId = newBlobId,
+                    cellCount = cellCount,
+                    skinPixels = skinSum,
+                    movingPixels = movingSum,
+                    minGx = minGx,
+                    maxGx = maxGx,
+                    minGy = minGy,
+                    maxGy = maxGy,
+                    centerX = ((float)cellWeightedGx / skinSum + 0.5f) / GRID_W,
+                    centerY = ((float)cellWeightedGy / skinSum + 0.5f) / GRID_H
+                };
             }
         }
 
-        // BÀN TAY HỢP LỆ: Ngưỡng cân bằng - không quá chặt, không quá lỏng
-        bool handFound = (validColumns >= 5 && handSkinPixels >= 15 && handEndCol > handStartCol && maxY > minY);
+        // Chọn cụm 2D là bàn tay tốt nhất
+        int bestIdx = -1;
+        float bestScore = float.MinValue;
 
-        if (handFound)
+        for (int i = 0; i < blobCount; i++)
         {
-            float cX = (float)sumX / handSkinPixels / width;
-            float cY = (float)sumY / handSkinPixels / height;
-            float handW = (float)(handEndCol - handStartCol) / width;
-            float handH = (float)(maxY - minY) / height;
+            SkinBlob2D b = detectedBlobs[i];
+            float bw = (float)(b.maxGx - b.minGx + 1) / GRID_W;
+            float bh = (float)(b.maxGy - b.minGy + 1) / GRID_H;
+            if (bw > 0.88f || bh > 0.90f)
+                continue;
 
-            if (handW >= 0.05f && handH >= 0.05f && handW <= 0.75f && handH <= 0.80f)
+            float motionRatio = (float)b.movingPixels / Mathf.Max(1, b.skinPixels);
+            float score = motionRatio * 14.0f
+                        + Mathf.Min(b.movingPixels, 150) * 0.06f
+                        + Mathf.Min(b.skinPixels, 300) * 0.004f;
+
+            // Nếu đã biết vị trí khuôn mặt đứng yên và có cụm khác (bàn tay), đẩy cụm khuôn mặt xuống cuối
+            if (hasKnownFace && blobCount > 1)
             {
+                float faceDist = Vector2.Distance(new Vector2(b.centerX, b.centerY), knownFacePos);
+                if (faceDist < 0.11f && motionRatio < 0.25f)
+                {
+                    score -= 50.0f;
+                }
+            }
+
+            if (isHandVisible && trackedHandCenter != Vector3.zero)
+            {
+                float dist = Vector2.Distance(new Vector2(b.centerX, b.centerY), new Vector2(trackedHandCenter.x, trackedHandCenter.y));
+                score -= dist * 1.5f;
+            }
+            else if (blobCount > 1)
+            {
+                // Nếu có 2 cụm (mặt ở giữa trên + tay ở dưới/bên), ưu tiên cụm tay
+                score += Mathf.Abs(b.centerX - 0.5f) * 2.0f + (1.0f - b.centerY) * 0.6f;
+            }
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestIdx = i;
+            }
+        }
+
+        if (bestIdx >= 0)
+        {
+            SkinBlob2D best = detectedBlobs[bestIdx];
+            int bestId = best.blobId;
+
+            int boundMinX = Mathf.Max(marginX, (best.minGx * width) / GRID_W);
+            int boundMaxX = Mathf.Min(width - marginX - 1, ((best.maxGx + 1) * width) / GRID_W);
+            int boundMinY = Mathf.Max(scanMinY, (best.minGy * height) / GRID_H);
+            int boundMaxY = Mathf.Min(scanMaxY - 1, ((best.maxGy + 1) * height) / GRID_H);
+
+            for (int x = boundMinX; x <= boundMaxX; x++)
+            {
+                topYInColumn[x] = -1;
+            }
+
+            int exactMinX = width, exactMaxX = 0, exactMinY = height, exactMaxY = 0;
+            long exactSumX = 0, exactSumY = 0, exactSkinLumSum = 0;
+            int exactSkinPixels = 0;
+
+            for (int y = boundMinY; y <= boundMaxY; y += step)
+            {
+                int row = y * width;
+                int gy = (y * GRID_H) / height;
+                if (gy >= GRID_H) gy = GRID_H - 1;
+                int gRow = gy * GRID_W;
+
+                for (int x = boundMinX; x <= boundMaxX; x += step)
+                {
+                    int gx = (x * GRID_W) / width;
+                    if (gx >= GRID_W) gx = GRID_W - 1;
+                    if (gridBlobId[gRow + gx] != bestId)
+                        continue;
+
+                    Color32 cur = pixels[row + x];
+                    if (IsSkinColorYCrCb(cur.r, cur.g, cur.b))
+                    {
+                        exactSkinPixels++;
+                        exactSumX += x;
+                        exactSumY += y;
+                        exactSkinLumSum += cur.r + cur.g + cur.b;
+                        if (x < exactMinX) exactMinX = x;
+                        if (x > exactMaxX) exactMaxX = x;
+                        if (y < exactMinY) exactMinY = y;
+                        if (y > exactMaxY) exactMaxY = y;
+                        if (y > topYInColumn[x]) topYInColumn[x] = y;
+                    }
+                }
+            }
+
+            if (exactSkinPixels >= 12 && exactMaxX > exactMinX && exactMaxY > exactMinY)
+            {
+                float invW = 1.0f / width;
+                float invH = 1.0f / height;
+                float cX = (float)exactSumX / exactSkinPixels * invW;
+                float cY = (float)exactSumY / exactSkinPixels * invH;
+                float handW = (exactMaxX - exactMinX) * invW;
+                float handH = (exactMaxY - exactMinY) * invH;
+
+                int boxW = exactMaxX - exactMinX;
+                int boxH = exactMaxY - exactMinY;
+                int colsInBox = Mathf.Max(1, boxW / step + 1);
+                int rowsInBox = Mathf.Max(1, boxH / step + 1);
+                float fillRatio = Mathf.Clamp01((float)exactSkinPixels / (colsInBox * rowsInBox));
+
+                // Kiểm tra đặc trưng khuôn mặt (2 mắt / chân mày / đường rẽ tóc tối bên trong vùng trên)
+                float avgSkinSum = (float)exactSkinLumSum / exactSkinPixels;
+                float darkThresh = avgSkinSum * 0.72f;
+                int inMinX = exactMinX + Mathf.RoundToInt(boxW * 0.20f);
+                int inMaxX = exactMinX + Mathf.RoundToInt(boxW * 0.80f);
+                int inMinY = exactMinY + Mathf.RoundToInt(boxH * 0.42f);
+                int inMaxY = exactMinY + Mathf.RoundToInt(boxH * 0.82f);
+                int interiorTotal = 0;
+                int interiorDark = 0;
+
+                for (int y = inMinY; y <= inMaxY; y += step)
+                {
+                    int row = y * width;
+                    for (int x = inMinX; x <= inMaxX; x += step)
+                    {
+                        interiorTotal++;
+                        Color32 cur = pixels[row + x];
+                        if (!IsSkinColorYCrCb(cur.r, cur.g, cur.b) && (cur.r + cur.g + cur.b) < darkThresh)
+                        {
+                            interiorDark++;
+                        }
+                    }
+                }
+                float darkFeatureRatio = (interiorTotal > 0) ? (float)interiorDark / interiorTotal : 0f;
+                float bestMotionRatio = (float)best.movingPixels / Mathf.Max(1, best.skinPixels);
+
+                if (!isHandVisible && bestMotionRatio < 0.12f)
+                {
+                    Vector2 curCenter2D = new Vector2(cX, cY);
+                    if (Vector2.Distance(curCenter2D, idleStaticBlobPos) < 0.05f)
+                        idleStaticBlobTimer += Time.deltaTime;
+                    else
+                    {
+                        idleStaticBlobPos = curCenter2D;
+                        idleStaticBlobTimer = 0f;
+                    }
+                }
+                else
+                {
+                    idleStaticBlobTimer = 0f;
+                }
+
+                bool matchesKnownFace = hasKnownFace &&
+                                        Vector2.Distance(new Vector2(cX, cY), knownFacePos) < 0.10f &&
+                                        Mathf.Abs(handW - knownFaceW) < 0.09f &&
+                                        Mathf.Abs(handH - knownFaceH) < 0.11f;
+                bool looksLikeFace = (darkFeatureRatio >= 0.055f && bestMotionRatio < 0.24f && handH >= 0.15f);
+
+                if (looksLikeFace || (matchesKnownFace && bestMotionRatio < 0.26f && (!isHandVisible || darkFeatureRatio >= 0.04f)) || (!isHandVisible && idleStaticBlobTimer >= 0.45f))
+                {
+                    Vector2 faceCenter2D = new Vector2(cX, cY);
+                    knownFacePos = hasKnownFace ? Vector2.Lerp(knownFacePos, faceCenter2D, 0.25f) : faceCenter2D;
+                    knownFaceW = handW;
+                    knownFaceH = handH;
+                    hasKnownFace = true;
+
+                    isHandVisible = false;
+                    handLostGraceTimer = 0f;
+                    currentLandmarks.confidence = 0f;
+                    trackedHandCenter = Vector3.zero;
+                    return false;
+                }
+
+                // Đếm số đỉnh ngón tay tách biệt ở mép trên (chỉ trên cụm 2D của bàn tay)
+                int highThresh = exactMinY + Mathf.RoundToInt(boxH * 0.65f);
+                int valleyThresh = exactMinY + Mathf.RoundToInt(boxH * 0.55f);
+                int fingerPeaks = 0;
+                bool inPeak = false;
+                for (int x = exactMinX; x <= exactMaxX; x += step)
+                {
+                    int ty = topYInColumn[x];
+                    if (!inPeak && ty >= highThresh)
+                    {
+                        inPeak = true;
+                        fingerPeaks++;
+                    }
+                    else if (inPeak && ty < valleyThresh)
+                    {
+                        inPeak = false;
+                    }
+                }
+
+                bool wasVisible = isHandVisible;
+                // Chỉ dùng tâm chuyển động 1:1 khi thực sự có chuyển động tay mạnh (>= 22% vùng tay), tránh nhiễu/chớp mắt trên mặt gây vệt chém giả
+                bool hasStrongHandMotion = (moveSkinTotal >= 40) && (best.movingPixels >= 28) && (bestMotionRatio >= 0.22f);
+                Vector3 instantCenter = hasStrongHandMotion
+                    ? new Vector3((float)moveSumX / moveSkinTotal * invW, (float)moveSumY / moveSkinTotal * invH, 0.5f)
+                    : new Vector3(cX, cY, 0.5f);
+
+                bool movedNow = best.movingPixels >= 16 || hasStrongHandMotion ||
+                                (wasVisible && Vector2.Distance(instantCenter, trackedHandCenter) >= 0.020f);
+                if (movedNow)
+                {
+                    lastHandMotionTime = Time.time;
+                }
+
                 isHandVisible = true;
-                handLostGraceTimer = 0.35f; // Giữ 0.35s để không bị đứt khi vung tay nhanh
+                handLostGraceTimer = 0.30f;
                 currentLandmarks.confidence = 0.95f;
                 currentLandmarks.handWidth = handW;
                 currentLandmarks.handHeight = handH;
+                currentLandmarks.fillRatio = fillRatio;
+                currentLandmarks.fingerPeaks = fingerPeaks;
+                currentLandmarks.isMoving = (Time.time - lastHandMotionTime) <= 2.5f;
 
-                // Lerp 0.65f: mượt nhưng vẫn phản ứng nhanh
-                trackedHandCenter = Vector3.Lerp(trackedHandCenter, new Vector3(cX, cY, 0.5f), 0.65f);
-                currentLandmarks.centroid = trackedHandCenter;
+                trackedHandCenter = (!wasVisible || trackedHandCenter == Vector3.zero || hasStrongHandMotion)
+                    ? instantCenter
+                    : Vector3.Lerp(trackedHandCenter, instantCenter, 0.90f);
+                currentLandmarks.centroid = instantCenter;
 
-                Vector3 wrist = new Vector3(cX, (float)minY / height, 0.5f);
+                Vector3 wrist = new Vector3(cX, (float)exactMinY * invH, 0.5f);
                 currentLandmarks.landmarks[(int)HandJoint.Wrist] = wrist;
 
-                BuildDynamicFingers(topYInColumn, handStartCol, handEndCol, minY, maxY, width, height, wrist);
-                return;
+                BuildDynamicFingers(topYInColumn, exactMinX, exactMaxX, exactMinY, exactMaxY, width, height, wrist);
+                return true;
             }
         }
 
-        // Khi người chơi hạ tay xuống: tắt bàn tay sau thời gian đệm 0.50s
+        // Khi người chơi hạ tay xuống: tắt bàn tay sau thời gian đệm
         if (handLostGraceTimer <= 0f)
         {
             isHandVisible = false;
             currentLandmarks.confidence = 0f;
             trackedHandCenter = Vector3.zero;
         }
+        return false;
     }
 
     /// <summary>
-    /// Bộ lọc màu da thích nghi cao trong không gian YCrCb kết hợp RGB:
-    /// - Nhận diện cực nhạy dưới mọi điều kiện ánh sáng phòng, đèn huỳnh quang hoặc ánh sáng màn hình laptop.
-    /// - Đảm bảo khi vung tay nhanh (motion blur) bàn tay vẫn được nhận diện liên tục không bị mất.
+    /// Bộ lọc màu da tối ưu bằng số nguyên (YCrCb + RGB):
+    /// - Không dùng phép nhân số thực trên từng pixel để đạt tốc độ cao trên cả Mobile.
+    /// - Nhận diện tốt dưới cả ánh sáng ấm, đèn LED trắng và khi vung tay nhanh.
     /// </summary>
     private bool IsSkinColorYCrCb(byte r, byte g, byte b)
     {
-        // Loại bỏ pixel quá tối hoặc quá trắng (không phải da)
-        if (r < 50) return false;
+        if (r < 45) return false;
         int sum = r + g + b;
-        if (sum < 110 || sum > 720) return false;
+        if (sum < 100 || sum > 750) return false;
 
-        // Da người: đỏ phải trội hơn xanh rõ ràng
-        if ((int)r - (int)g < 8 || (int)r - (int)b < 8) return false;
+        if (r - g < 4 || r - b < 5) return false;
 
-        float rf = r;
-        float gf = g;
-        float bf = b;
+        int cr = 128 + ((128 * r - 107 * g - 21 * b) >> 8);
+        int cb = 128 + ((-43 * r - 85 * g + 128 * b) >> 8);
 
-        float cr = 128f + 0.5f * rf - 0.418688f * gf - 0.081312f * bf;
-        float cb = 128f - 0.168736f * rf - 0.331264f * gf + 0.5f * bf;
-
-        // Dải YCrCb cân bằng: không quá chặt (miss da), không quá rộng (nhầm nền)
-        return (cr >= 128f && cr <= 185f && cb >= 70f && cb <= 135f);
+        return (cr >= 126 && cr <= 188 && cb >= 68 && cb <= 138);
     }
 
     private void BuildDynamicFingers(int[] topY, int minX, int maxX, int minY, int maxY, int width, int height, Vector3 wrist)
@@ -343,16 +700,20 @@ public class MediaPipeHandTracker : MonoBehaviour
 
     private void DrawMediaPipeStatusBanner(int sw)
     {
-        GUIStyle style = new GUIStyle();
-        style.richText = true;
-        style.fontSize = Mathf.Clamp(Mathf.RoundToInt(sw * 0.015f), 11, 13);
-        style.fontStyle = FontStyle.Bold;
-        style.normal.textColor = Color.white;
-        style.alignment = TextAnchor.MiddleCenter;
+        if (cachedStatusStyle == null)
+        {
+            cachedStatusStyle = new GUIStyle();
+            cachedStatusStyle.richText = true;
+            cachedStatusStyle.fontStyle = FontStyle.Bold;
+            cachedStatusStyle.normal.textColor = Color.white;
+            cachedStatusStyle.alignment = TextAnchor.MiddleCenter;
+        }
+        cachedStatusStyle.fontSize = Mathf.Clamp(Mathf.RoundToInt(sw * 0.015f), 11, 13);
+        GUIStyle style = cachedStatusStyle;
 
         string handStatus = isHandVisible ? "<color=#00ff88>● ĐÃ THẤY TAY</color>" : "<color=#ff5555>○ CHƯA THẤY TAY</color>";
         float speed = GestureRecognizer.Instance != null ? GestureRecognizer.Instance.GetCurrentHandSpeed() : 0f;
-        string speedColor = (speed >= 0.55f) ? "#ff3333" : (speed > 0.20f ? "#ffaa00" : "#ffffff");
+        string speedColor = (speed >= 0.18f) ? "#ff3333" : (speed > 0.10f ? "#ffaa00" : "#ffffff");
         string speedText = isHandVisible ? $" | Vận tốc: <color={speedColor}>{speed:F2} m/s</color>" : "";
 
         string gestureText = "";

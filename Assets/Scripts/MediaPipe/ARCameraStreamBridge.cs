@@ -49,6 +49,8 @@ public class ARCameraStreamBridge : MonoBehaviour
 
     // Sự kiện phát ra khung hình Texture2D sẵn sàng cho MediaPipe
     public static event Action<Texture2D> OnCameraFrameReady;
+    // Sự kiện truyền trực tiếp buffer Color32 đã xoay/lật (không cấp phát rác, không upload GPU)
+    public static event Action<Color32[], int, int> OnCameraPixelsReady;
 
     private Texture2D cameraTexture;
     private WebCamTexture pcWebCamTexture;
@@ -56,7 +58,9 @@ public class ARCameraStreamBridge : MonoBehaviour
     private bool isUsingARCamera = false;
     private GameObject pcBackgroundQuad;
     private Material pcBackgroundMat;
+    private Color32[] rawPixelsBuffer;
     private Color32[] flippedPixels;
+    private Camera cachedMainCamera;
     private bool isCameraInitialized = false;
 
     void Awake()
@@ -65,6 +69,10 @@ public class ARCameraStreamBridge : MonoBehaviour
             Instance = this;
         else
             Destroy(gameObject);
+
+        // Đảm bảo chạy 60 FPS trên cả PC và Mobile thay vì mặc định 30 FPS trên điện thoại
+        Application.targetFrameRate = 60;
+        QualitySettings.vSyncCount = 0;
 
         // Nạp thiết lập xoay / lật camera đã lưu trên thiết bị
         extraRotationAngle = PlayerPrefs.GetInt("CamRotOffset", 0);
@@ -196,7 +204,7 @@ public class ARCameraStreamBridge : MonoBehaviour
         // Xử lý khung hình từ Camera trước gửi sang AI
         if (!isUsingARCamera && pcWebCamTexture != null && pcWebCamTexture.isPlaying)
         {
-            if (Time.time - lastProcessTime >= processInterval)
+            if (Time.time - lastProcessTime >= processInterval && (OnCameraPixelsReady != null || OnCameraFrameReady != null))
             {
                 lastProcessTime = Time.time;
 
@@ -213,12 +221,13 @@ public class ARCameraStreamBridge : MonoBehaviour
                         th = 320;
                     }
 
-                    if (cameraTexture == null || cameraTexture.width != tw || cameraTexture.height != th)
+                    int rawLen = w * h;
+                    if (rawPixelsBuffer == null || rawPixelsBuffer.Length != rawLen)
                     {
-                        cameraTexture = new Texture2D(tw, th, TextureFormat.RGBA32, false);
+                        rawPixelsBuffer = new Color32[rawLen];
                     }
+                    pcWebCamTexture.GetPixels32(rawPixelsBuffer);
 
-                    Color32[] rawPixels = pcWebCamTexture.GetPixels32();
                     if (flippedPixels == null || flippedPixels.Length != tw * th)
                     {
                         flippedPixels = new Color32[tw * th];
@@ -237,6 +246,8 @@ public class ARCameraStreamBridge : MonoBehaviour
 
                     float invTw = 1.0f / tw;
                     float invTh = 1.0f / th;
+                    int wMax = w - 1;
+                    int hMax = h - 1;
 
                     for (int ty = 0; ty < th; ty++)
                     {
@@ -254,17 +265,30 @@ public class ARCameraStreamBridge : MonoBehaviour
                             float uSrc = (cu * cosTheta - cv * sinTheta) + 0.5f;
                             float vSrc = (cu * sinTheta + cv * cosTheta) + 0.5f;
 
-                            int sx = Mathf.Clamp((int)(uSrc * w), 0, w - 1);
-                            int sy = Mathf.Clamp((int)(vSrc * h), 0, h - 1);
+                            int sx = (int)(uSrc * w);
+                            if (sx < 0) sx = 0;
+                            else if (sx > wMax) sx = wMax;
 
-                            flippedPixels[dstRow + tx] = rawPixels[sy * w + sx];
+                            int sy = (int)(vSrc * h);
+                            if (sy < 0) sy = 0;
+                            else if (sy > hMax) sy = hMax;
+
+                            flippedPixels[dstRow + tx] = rawPixelsBuffer[sy * w + sx];
                         }
                     }
 
-                    cameraTexture.SetPixels32(flippedPixels);
-                    cameraTexture.Apply();
+                    OnCameraPixelsReady?.Invoke(flippedPixels, tw, th);
 
-                    OnCameraFrameReady?.Invoke(cameraTexture);
+                    if (OnCameraFrameReady != null)
+                    {
+                        if (cameraTexture == null || cameraTexture.width != tw || cameraTexture.height != th)
+                        {
+                            cameraTexture = new Texture2D(tw, th, TextureFormat.RGBA32, false);
+                        }
+                        cameraTexture.SetPixels32(flippedPixels);
+                        cameraTexture.Apply(false);
+                        OnCameraFrameReady.Invoke(cameraTexture);
+                    }
                 }
             }
         }
@@ -272,9 +296,11 @@ public class ARCameraStreamBridge : MonoBehaviour
 
     private void SetupPCBackgroundQuad()
     {
-        Camera cam = Camera.main;
-        if (cam == null)
-            cam = FindAnyObjectByType<Camera>();
+        if (cachedMainCamera == null)
+        {
+            cachedMainCamera = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+        }
+        Camera cam = cachedMainCamera;
 
         if (cam == null)
         {
@@ -333,9 +359,11 @@ public class ARCameraStreamBridge : MonoBehaviour
     /// </summary>
     private void UpdatePCBackgroundQuad()
     {
-        Camera cam = Camera.main;
-        if (cam == null)
-            cam = FindAnyObjectByType<Camera>();
+        if (cachedMainCamera == null)
+        {
+            cachedMainCamera = Camera.main != null ? Camera.main : FindAnyObjectByType<Camera>();
+        }
+        Camera cam = cachedMainCamera;
 
         if (pcBackgroundQuad == null || cam == null || pcWebCamTexture == null)
             return;
@@ -434,31 +462,6 @@ public class ARCameraStreamBridge : MonoBehaviour
         Debug.Log($"[ARCameraStreamBridge] Lật dọc: {flipVertical}");
     }
 
-    void OnGUI()
-    {
-        int sw = Screen.width;
-        int btnW = Mathf.Clamp(Mathf.RoundToInt(sw * 0.18f), 68, 86);
-        int btnH = 26;
-        int rightMargin = 16;
-        int topY = 96;
-
-        GUIStyle btnStyle = new GUIStyle(GUI.skin.button);
-        btnStyle.fontSize = Mathf.Clamp(Mathf.RoundToInt(sw * 0.022f), 10, 12);
-        btnStyle.fontStyle = FontStyle.Bold;
-
-        // Nút 1: Xoay camera 90 độ
-        if (GUI.Button(new Rect(sw - rightMargin - btnW * 2 - 6, topY, btnW, btnH), $"🔄 Xoay", btnStyle))
-        {
-            RotateCameraClockwise();
-        }
-
-        // Nút 2: Lật dọc (sửa ngay nếu bị lộn ngược đầu)
-        if (GUI.Button(new Rect(sw - rightMargin - btnW, topY, btnW, btnH), $"↕ Lộn đầu", btnStyle))
-        {
-            ToggleFlipVertical();
-        }
-    }
-
     private void OnARCameraFrameReceived(ARCameraFrameEventArgs eventArgs)
     {
         if (Time.time - lastProcessTime < processInterval)
@@ -489,9 +492,22 @@ public class ARCameraStreamBridge : MonoBehaviour
 
             var rawTextureData = cameraTexture.GetRawTextureData<byte>();
             cpuImage.Convert(conversionParams, rawTextureData);
-            cameraTexture.Apply();
 
-            OnCameraFrameReady?.Invoke(cameraTexture);
+            if (OnCameraPixelsReady != null)
+            {
+                if (flippedPixels == null || flippedPixels.Length != tw * th)
+                {
+                    flippedPixels = new Color32[tw * th];
+                }
+                cameraTexture.GetRawTextureData<Color32>().CopyTo(flippedPixels);
+                OnCameraPixelsReady.Invoke(flippedPixels, tw, th);
+            }
+
+            if (OnCameraFrameReady != null)
+            {
+                cameraTexture.Apply(false);
+                OnCameraFrameReady.Invoke(cameraTexture);
+            }
         }
     }
 

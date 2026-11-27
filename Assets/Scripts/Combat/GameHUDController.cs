@@ -71,6 +71,17 @@ public class GameHUDController : MonoBehaviour
     private Texture2D darkBgTex;
     private Texture2D greenTex;
 
+    // Cache GUIStyle để OnGUI không cấp phát rác bộ nhớ mỗi frame
+    private GUIStyle cachedHeartStyle;
+    private GUIStyle cachedScoreStyle;
+    private GUIStyle cachedComboStyle;
+    private GUIStyle cachedLevelStyle;
+    private GUIStyle cachedSkullStyle;
+    private GUIStyle cachedSkillIconStyle;
+    private GUIStyle cachedSkillLabelStyle;
+    private MonsterController cachedBoss;
+    private float nextBossScanTime = 0f;
+
     void Awake()
     {
         if (Instance == null)
@@ -331,10 +342,19 @@ public class GameHUDController : MonoBehaviour
         GUI.DrawTexture(new Rect(25, 20, 220, 48), darkBgTex);
         DrawBorder(new Rect(25, 20, 220, 48), new Color(0.2f, 0.7f, 1f, 0.8f), 2);
 
-        GUIStyle heartStyle = new GUIStyle();
-        heartStyle.fontSize = 24;
-        heartStyle.alignment = TextAnchor.MiddleCenter;
-        GUI.Label(new Rect(32, 22, 35, 42), "❤️", heartStyle);
+        if (cachedHeartStyle == null)
+        {
+            cachedHeartStyle = new GUIStyle { fontSize = 24, alignment = TextAnchor.MiddleCenter };
+            cachedScoreStyle = new GUIStyle { fontSize = 18, fontStyle = FontStyle.Bold };
+            cachedScoreStyle.normal.textColor = Color.white;
+            cachedComboStyle = new GUIStyle { fontSize = 17, fontStyle = FontStyle.Bold };
+            cachedLevelStyle = new GUIStyle { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            cachedLevelStyle.normal.textColor = Color.white;
+            cachedSkullStyle = new GUIStyle { fontSize = 18, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft };
+            cachedSkullStyle.normal.textColor = Color.white;
+        }
+
+        GUI.Label(new Rect(32, 22, 35, 42), "❤️", cachedHeartStyle);
 
         DrawColorRect(new Rect(72, 34, 160, 18), new Color(0.1f, 0.1f, 0.1f, 0.9f));
         if (hpPercent > 0)
@@ -343,22 +363,15 @@ public class GameHUDController : MonoBehaviour
             GUI.DrawTexture(new Rect(74, 36, 156 * hpPercent, 14), barTex);
         }
 
-        GUIStyle scoreStyle = new GUIStyle();
-        scoreStyle.fontSize = 18;
-        scoreStyle.fontStyle = FontStyle.Bold;
-        scoreStyle.normal.textColor = Color.white;
-        GUI.Label(new Rect(28, 72, 200, 25), $"Score: {currentScore}", scoreStyle);
+        GUI.Label(new Rect(28, 72, 200, 25), $"Score: {currentScore}", cachedScoreStyle);
 
         // Hiển thị hệ thống chuỗi Combo chiến đấu
         int combo = PlayerCombatController.Instance != null ? PlayerCombatController.Instance.GetComboCount() : 0;
         if (combo >= 2)
         {
-            GUIStyle comboStyle = new GUIStyle();
-            comboStyle.fontSize = 17;
-            comboStyle.fontStyle = FontStyle.Bold;
-            comboStyle.normal.textColor = (combo >= 3) ? new Color(1f, 0.88f, 0.2f, 1f) : new Color(0.2f, 0.9f, 1f, 1f);
+            cachedComboStyle.normal.textColor = (combo >= 3) ? new Color(1f, 0.88f, 0.2f, 1f) : new Color(0.2f, 0.9f, 1f, 1f);
             string comboText = (combo >= 3) ? $"⚡ COMBO x{combo} (CHÍ MẠNG!)" : $"🔥 COMBO x{combo}";
-            GUI.Label(new Rect(28, 96, 260, 25), comboText, comboStyle);
+            GUI.Label(new Rect(28, 96, 260, 25), comboText, cachedComboStyle);
         }
 
         // =========================================================================
@@ -371,12 +384,7 @@ public class GameHUDController : MonoBehaviour
         GUI.DrawTexture(new Rect(badgeX, 15, badgeWidth, 42), blueTex);
         DrawBorder(new Rect(badgeX, 15, badgeWidth, 42), Color.white, 2);
 
-        GUIStyle levelStyle = new GUIStyle();
-        levelStyle.fontSize = 22;
-        levelStyle.fontStyle = FontStyle.Bold;
-        levelStyle.normal.textColor = Color.white;
-        levelStyle.alignment = TextAnchor.MiddleCenter;
-        GUI.Label(new Rect(badgeX, 15, badgeWidth, 42), $"Level {level}", levelStyle);
+        GUI.Label(new Rect(badgeX, 15, badgeWidth, 42), $"Level {level}", cachedLevelStyle);
 
         // =========================================================================
         // 3. GÓC TRÊN BÊN PHẢI: ĐẦU LÂU (DIỆT QUÁI X/30) + QUÁI HIỆN TẠI (ALIVE)
@@ -388,21 +396,16 @@ public class GameHUDController : MonoBehaviour
         GUI.DrawTexture(new Rect(rightPanelX, 18, rightPanelW, 36), darkBgTex);
         DrawBorder(new Rect(rightPanelX, 18, rightPanelW, 36), new Color(0.2f, 0.7f, 1f, 0.8f), 2);
 
-        GUIStyle skullStyle = new GUIStyle();
-        skullStyle.fontSize = 18;
-        skullStyle.fontStyle = FontStyle.Bold;
-        skullStyle.normal.textColor = Color.white;
-        skullStyle.alignment = TextAnchor.MiddleLeft;
-        GUI.Label(new Rect(rightPanelX + 12, 18, 30, 36), "💀", skullStyle);
-        GUI.Label(new Rect(rightPanelX + 48, 18, 105, 36), $"{monstersKilledInLevel} / {totalMonstersPerLevel}", skullStyle);
+        GUI.Label(new Rect(rightPanelX + 12, 18, 30, 36), "💀", cachedSkullStyle);
+        GUI.Label(new Rect(rightPanelX + 48, 18, 105, 36), $"{monstersKilledInLevel} / {totalMonstersPerLevel}", cachedSkullStyle);
 
         // Ô 2: Số quái vật đang xuất hiện trước mắt người chơi
         int aliveCount = MonsterSpawner.Instance != null ? MonsterSpawner.Instance.GetAliveMonsterCount() : 0;
         GUI.DrawTexture(new Rect(rightPanelX, 60, rightPanelW, 36), darkBgTex);
         DrawBorder(new Rect(rightPanelX, 60, rightPanelW, 36), new Color(0.2f, 0.7f, 1f, 0.8f), 2);
 
-        GUI.Label(new Rect(rightPanelX + 12, 60, 30, 36), "👾", skullStyle);
-        GUI.Label(new Rect(rightPanelX + 48, 60, 105, 36), $"{aliveCount} Quái", skullStyle);
+        GUI.Label(new Rect(rightPanelX + 12, 60, 30, 36), "👾", cachedSkullStyle);
+        GUI.Label(new Rect(rightPanelX + 48, 60, 105, 36), $"{aliveCount} Quái", cachedSkullStyle);
 
         // =========================================================================
         // 4. TÂM MÀN HÌNH: TÂM NGẮM (HOÀN TOÀN TẮT ĐỂ KHÔNG VƯỚNG MẶT NGƯỜI CHƠI)
@@ -506,17 +509,15 @@ public class GameHUDController : MonoBehaviour
         int borderWidth = isActive ? 3 : 2;
         DrawBorder(rect, borderColor, borderWidth);
 
-        GUIStyle iconStyle = new GUIStyle();
-        iconStyle.fontSize = 24;
-        iconStyle.alignment = TextAnchor.MiddleCenter;
-        GUI.Label(new Rect(rect.x, rect.y + 6, rect.width, 32), icon, iconStyle);
+        if (cachedSkillIconStyle == null)
+        {
+            cachedSkillIconStyle = new GUIStyle { fontSize = 24, alignment = TextAnchor.MiddleCenter };
+            cachedSkillLabelStyle = new GUIStyle { fontSize = 11, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+        }
+        GUI.Label(new Rect(rect.x, rect.y + 6, rect.width, 32), icon, cachedSkillIconStyle);
 
-        GUIStyle labelStyle = new GUIStyle();
-        labelStyle.fontSize = 11;
-        labelStyle.fontStyle = FontStyle.Bold;
-        labelStyle.normal.textColor = isActive ? new Color(1f, 0.95f, 0.3f, 1f) : Color.white;
-        labelStyle.alignment = TextAnchor.MiddleCenter;
-        GUI.Label(new Rect(rect.x, rect.y + 44, rect.width, 24), label, labelStyle);
+        cachedSkillLabelStyle.normal.textColor = isActive ? new Color(1f, 0.95f, 0.3f, 1f) : Color.white;
+        GUI.Label(new Rect(rect.x, rect.y + 44, rect.width, 24), label, cachedSkillLabelStyle);
 
         if (GUI.Button(rect, GUIContent.none, GUIStyle.none))
         {
@@ -657,18 +658,23 @@ public class GameHUDController : MonoBehaviour
     {
         if (level < 5) return;
 
-        MonsterController boss = null;
-        MonsterController[] allMonsters = Object.FindObjectsByType<MonsterController>(FindObjectsSortMode.None);
-        foreach (var m in allMonsters)
+        if ((cachedBoss == null || cachedBoss.IsDead()) && Time.time >= nextBossScanTime)
         {
-            if (m != null && m.IsBoss())
+            nextBossScanTime = Time.time + 0.3f;
+            cachedBoss = null;
+            MonsterController[] allMonsters = Object.FindObjectsByType<MonsterController>(FindObjectsSortMode.None);
+            foreach (var m in allMonsters)
             {
-                boss = m;
-                break;
+                if (m != null && !m.IsDead() && m.IsBoss())
+                {
+                    cachedBoss = m;
+                    break;
+                }
             }
         }
 
-        if (boss == null) return;
+        if (cachedBoss == null || cachedBoss.IsDead()) return;
+        MonsterController boss = cachedBoss;
 
         float barW = 440f;
         float barH = 24f;

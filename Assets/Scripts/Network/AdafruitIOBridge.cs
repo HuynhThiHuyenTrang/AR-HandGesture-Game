@@ -379,13 +379,18 @@ public class AdafruitIOBridge : MonoBehaviour
 
     private bool showServerConfig = false;
     private string tempDockerUrl = "";
+    private GUIStyle cachedConnStyle;
 
     void OnGUI()
     {
-        GUIStyle style = new GUIStyle();
-        style.fontSize = 10;
-        style.fontStyle = FontStyle.Bold;
-        style.normal.textColor = isConnected ? new Color(0.2f, 1f, 0.4f, 0.85f) : new Color(1f, 0.6f, 0.2f, 0.85f);
+        if (cachedConnStyle == null)
+        {
+            cachedConnStyle = new GUIStyle();
+            cachedConnStyle.fontSize = 10;
+            cachedConnStyle.fontStyle = FontStyle.Bold;
+        }
+        cachedConnStyle.normal.textColor = isConnected ? new Color(0.2f, 1f, 0.4f, 0.85f) : new Color(1f, 0.6f, 0.2f, 0.85f);
+        GUIStyle style = cachedConnStyle;
 
         string mode = isUsingDocker ? "Docker + Adafruit IO" : "Adafruit IO";
         string connText = isConnected ? $"● {mode}: ĐÃ KẾT NỐI (Chạm sửa IP)" : $"○ {mode}: ĐANG KẾT NỐI... (Chạm sửa IP)";

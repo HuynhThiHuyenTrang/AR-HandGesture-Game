@@ -22,10 +22,10 @@ public class GestureRecognizer : MonoBehaviour
 
     [Header("--- 1. CỬ CHỈ CHÉM QUÁI (SLASH) ---")]
     [Tooltip("Vận tốc di chuyển bàn tay tối thiểu để tính là vung chém (m/s)")]
-    [SerializeField] private float slashSpeedThreshold = 0.40f;
+    [SerializeField] private float slashSpeedThreshold = 0.18f;
 
-    [Tooltip("Quãng đường tối thiểu bàn tay lướt qua để tính là 1 cú chém (10% màn hình, tránh chụm tay bị nhầm thành chém)")]
-    [SerializeField] private float slashMinDisplacement = 0.10f;
+    [Tooltip("Quãng đường tối thiểu bàn tay lướt qua để tính là 1 cú chém")]
+    [SerializeField] private float slashMinDisplacement = 0.040f;
 
 
     [Header("--- 2. CỬ CHỈ TƯỜNG CHẮN (SHIELD) ---")]
@@ -34,14 +34,14 @@ public class GestureRecognizer : MonoBehaviour
 
     [Header("--- 3. CỬ CHỈ LẤY VẬT PHẨM (GRAB) ---")]
     [Tooltip("Ngưỡng khoảng cách tối đa giữa đầu ngón cái và ngón trỏ để tính là Chụm tay")]
-    [SerializeField] private float pinchDistanceThreshold = 0.08f;
+    [SerializeField] private float pinchDistanceThreshold = 0.105f;
 
     [Header("--- CẤU HÌNH THỜI GIAN THEO ĐỀ TÀI ---")]
     [Tooltip("Thời gian hồi chiêu giữa 2 lần chém để mượt mà (giây)")]
-    [SerializeField] private float slashCooldown = 0.10f;
+    [SerializeField] private float slashCooldown = 0.14f;
 
     [Tooltip("Thời gian chờ giữa 2 lần phát sự kiện tĩnh (giây)")]
-    [SerializeField] private float gestureCooldown = 0.22f;
+    [SerializeField] private float gestureCooldown = 0.18f;
 
     [Tooltip("Ngưỡng tin cậy tối thiểu của MediaPipe")]
     [SerializeField] private float confidenceThreshold = 0.5f;
@@ -51,6 +51,7 @@ public class GestureRecognizer : MonoBehaviour
     [SerializeField] private HandGestureType currentConfirmedGesture = HandGestureType.None;
     [SerializeField] private float candidateDuration = 0f;
     [SerializeField] private float cooldownTimer = 0f;
+    [SerializeField] private float slashCooldownTimer = 0f;
     [SerializeField] private bool isHandTracked = false;
 
     [Header("--- THÔNG SỐ ĐO ĐẠC THỰC TẾ ---")]
@@ -69,9 +70,8 @@ public class GestureRecognizer : MonoBehaviour
     private float trackingLostTimer = 0f;
     private bool isHoldingObject = false;
     private float lastStaticCheckTime = -1f;
-
-    // Sau khi chém, yêu cầu mở tay ra rồi mới được chụm để hút tim.
-    private bool grabNeedsReleaseAfterSlash = false;
+    private Vector2 prevCentroid = Vector2.zero;
+    private float prevCentroidTime = -1f;
 
     // Toạ độ thực tế của vệt vung tay chém mới nhất (chuẩn hóa 0..1)
     private Vector2 lastSlashStart = new Vector2(0.28f, 0.70f);
@@ -91,6 +91,10 @@ public class GestureRecognizer : MonoBehaviour
         {
             cooldownTimer -= Time.deltaTime;
         }
+        if (slashCooldownTimer > 0f)
+        {
+            slashCooldownTimer -= Time.deltaTime;
+        }
 
         if (!isHandTracked)
         {
@@ -102,6 +106,7 @@ public class GestureRecognizer : MonoBehaviour
                 currentConfirmedGesture = HandGestureType.None;
                 motionHistory.Clear();
                 currentHandSpeed = 0f;
+                prevCentroidTime = -1f;
             }
         }
         else
@@ -112,16 +117,27 @@ public class GestureRecognizer : MonoBehaviour
         HandlePCTestShortcuts();
     }
 
+    public void NotifyHandLost()
+    {
+        isHandTracked = false;
+        candidateDuration = 0f;
+        detectedCandidate = HandGestureType.None;
+        currentConfirmedGesture = HandGestureType.None;
+        motionHistory.Clear();
+        currentHandSpeed = 0f;
+        prevCentroidTime = -1f;
+    }
+
     public void TriggerInstantSlash(float detectedSpeed, Vector2 startNorm, Vector2 endNorm)
     {
         currentHandSpeed = detectedSpeed;
         lastSlashStart = startNorm;
         lastSlashEnd = endNorm;
 
-        if (cooldownTimer <= 0f && detectedSpeed >= slashSpeedThreshold)
+        if (slashCooldownTimer <= 0f && detectedSpeed >= slashSpeedThreshold)
         {
             ConfirmGesture(HandGestureType.Slash);
-            cooldownTimer = slashCooldown;
+            slashCooldownTimer = slashCooldown;
             motionHistory.Clear();
         }
     }
@@ -136,7 +152,7 @@ public class GestureRecognizer : MonoBehaviour
     /// <summary>
     /// Xử lý các điểm Landmark của bàn tay:
     /// - Đo vận tốc và chuyển động lướt qua màn hình trong 0.16s để chém quái chuẩn xác.
-    /// - Khi bàn tay di chuyển bình thường: nhận diện Tường chắn (xòe tay) hoặc Lấy tim (chụm/nắm tay).
+    /// - Khi bàn tay ổn định: nhận diện Tường chắn (xòe tay) hoặc Lấy tim (chụm/nắm tay) ngay lập tức.
     /// </summary>
     public void ProcessLandmarks(HandLandmarkResult rawResult)
     {
@@ -146,8 +162,9 @@ public class GestureRecognizer : MonoBehaviour
             return;
         }
 
+        bool wasTracked = isHandTracked;
         isHandTracked = true;
-        SmoothLandmarks(rawResult);
+        SmoothLandmarks(rawResult, !wasTracked);
 
         Vector3 wrist = smoothedResult.GetJoint(HandJoint.Wrist);
         Vector3 thumbTip = smoothedResult.GetJoint(HandJoint.ThumbTip);
@@ -157,20 +174,30 @@ public class GestureRecognizer : MonoBehaviour
         currentPinchDistance = Vector3.Distance(thumbTip, indexTip);
         currentHandCenterY = (wrist.y + middleTip.y) * 0.5f;
 
-        // Chỉ mở khóa Grab khi người chơi đã mở ngón cái và ngón trỏ ra.
-        if (currentPinchDistance > pinchDistanceThreshold * 1.35f)
-        {
-            grabNeedsReleaseAfterSlash = false;
-        }
-
         // =========================================================================
-        // 1. CHÉM QUÁI (SLASH): THEO DÕI VẬN TỐC & QUỸ ĐẠO BÀN TAY TRONG 0.22s
+        // 1. CHÉM QUÁI (SLASH): THEO DÕI VẬN TỐC & QUỸ ĐẠO BÀN TAY TRONG 0.16s
         // =========================================================================
         float now = Time.time;
         Vector2 currentPos = new Vector2(smoothedResult.centroid.x, smoothedResult.centroid.y);
+
+        if (!wasTracked)
+        {
+            motionHistory.Clear();
+            prevCentroid = currentPos;
+            prevCentroidTime = now;
+        }
+
+        float instantSpeed = 0f;
+        if (prevCentroidTime > 0f && (now - prevCentroidTime) > 0.005f)
+        {
+            instantSpeed = Vector2.Distance(currentPos, prevCentroid) / (now - prevCentroidTime);
+        }
+        prevCentroid = currentPos;
+        prevCentroidTime = now;
+
         motionHistory.Enqueue(new CentroidSample { position = currentPos, timestamp = now });
 
-        while (motionHistory.Count > 0 && (now - motionHistory.Peek().timestamp) > 0.22f)
+        while (motionHistory.Count > 0 && (now - motionHistory.Peek().timestamp) > 0.18f)
         {
             motionHistory.Dequeue();
         }
@@ -179,7 +206,6 @@ public class GestureRecognizer : MonoBehaviour
         float maxDisplacement = 0f;
         Vector2 slashStartPoint = currentPos;
 
-        // Quét đa điểm trong hàng đợi 0.22s: bắt trọn đỉnh vận tốc khi vung tay, triệt tiêu 100% hiện tượng trượt nhát chém
         foreach (var sample in motionHistory)
         {
             float d = Vector2.Distance(currentPos, sample.position);
@@ -195,16 +221,13 @@ public class GestureRecognizer : MonoBehaviour
 
         currentHandSpeed = maxSpeed;
 
-        // Đòn chém cần có cả vận tốc vung tay (maxSpeed >= slashSpeedThreshold) VÀ quãng đường lướt thực sự (>= slashMinDisplacement)
-        // Không kích hoạt chém chỉ vì chụm/nắm ngón tay tại chỗ làm dịch nhẹ trọng tâm
         bool isSlash = (maxDisplacement >= slashMinDisplacement && maxSpeed >= slashSpeedThreshold);
 
-        if (isSlash && cooldownTimer <= 0f)
+        if (isSlash && slashCooldownTimer <= 0f)
         {
             lastSlashStart = slashStartPoint;
             lastSlashEnd = currentPos;
             ConfirmGesture(HandGestureType.Slash);
-            cooldownTimer = Mathf.Max(slashCooldown, 0.25f); // Khóa 0.25s sau cú chém để vệt tay chém không bị nhận nhầm thành chụm tay
             motionHistory.Clear();
             detectedCandidate = HandGestureType.None;
             candidateDuration = 0f;
@@ -212,13 +235,12 @@ public class GestureRecognizer : MonoBehaviour
         }
 
         // =========================================================================
-        // 2. CỬ CHỈ TĨNH: XÉT KHI BÀN TAY KHÔNG VUNG CHÉM (SPEED < 0.35 m/s & DỊCH CHUYỂN < 0.045)
-        // Cho phép rung nhẹ 1-2 pixel của camera nhưng vẫn khóa hoàn toàn khi đang vung tay chém!
+        // 2. CỬ CHỈ TĨNH: XÉT KHI TỐC ĐỘ TỨC THỜI THẤP (< 0.55 m/s)
         // =========================================================================
         float dtStatic = (lastStaticCheckTime > 0f) ? Mathf.Clamp(now - lastStaticCheckTime, 0f, 0.2f) : 0.033f;
         lastStaticCheckTime = now;
 
-        if (currentHandSpeed < 0.35f && maxDisplacement < 0.045f)
+        if (instantSpeed < 0.55f)
         {
             float handW = smoothedResult.handWidth;
             float handH = smoothedResult.handHeight;
@@ -226,14 +248,19 @@ public class GestureRecognizer : MonoBehaviour
 
             HandGestureType staticGesture = HandGestureType.None;
 
-            // LẤY TIM (GRAB): Nhận khi chụm ngón cái-trỏ (<= 0.095) HOẶC nắm tay gọn (tỉ lệ vuông, không dẹt ngang như khi chém)
-            bool isPinching = currentPinchDistance > 0.001f && currentPinchDistance <= 0.095f;
-            bool isCompactFist = (handW <= 0.23f && handH <= 0.23f && ratio >= 0.78f && ratio <= 1.45f);
-            bool isGrab = isPinching || isCompactFist;
+            // LẤY TIM (GRAB): Chụm ngón cái-trỏ, nắm tay gọn, hoặc các ngón chụm đặc lại (fingerPeaks <= 1)
+            bool canGrabByActivity = smoothedResult.isMoving;
+            bool isPinching = currentPinchDistance > 0.001f && currentPinchDistance <= pinchDistanceThreshold;
+            bool isCompactFist = (handW <= 0.34f && handH <= 0.34f && ratio >= 0.60f && ratio <= 1.70f &&
+                                  (smoothedResult.fillRatio >= 0.45f || currentPinchDistance <= 0.135f));
+            bool isPinchCluster = (smoothedResult.fingerPeaks <= 1 && smoothedResult.fillRatio >= 0.45f && handW <= 0.36f && handH <= 0.36f);
+            bool isGrab = canGrabByActivity && (isPinching || isCompactFist || isPinchCluster);
 
-            // TƯỜNG CHẮN (SHIELD): Thẳng bàn tay mở giơ cao
-            bool isOpenPalm = !isGrab && (handW >= 0.08f && handH >= 0.08f) && 
-                              (currentPinchDistance > openPalmMinPinch || handH >= 0.15f);
+            // TƯỜNG CHẮN (SHIELD): Phải có >= 2 đỉnh ngón tay xòe ra HOẶC bàn tay đang giơ có khe hở giữa ngón
+            // Tránh khuôn mặt tĩnh tròn (fingerPeaks <= 1, fillRatio cao) tự kích hoạt tường chắn!
+            bool hasOpenHandShape = (smoothedResult.fingerPeaks >= 2) || (smoothedResult.isMoving && smoothedResult.fillRatio <= 0.54f);
+            bool isOpenPalm = !isGrab && hasOpenHandShape && (handW >= 0.08f && handH >= 0.10f) &&
+                              (currentPinchDistance > openPalmMinPinch || handH >= 0.13f);
 
             if (isGrab)
             {
@@ -244,22 +271,31 @@ public class GestureRecognizer : MonoBehaviour
                 staticGesture = HandGestureType.OpenPalm;
             }
 
-            if (staticGesture == detectedCandidate && staticGesture != HandGestureType.None)
+            if (staticGesture != HandGestureType.None)
             {
-                candidateDuration += dtStatic;
-                // Giữ chụm/nắm tay 0.12 giây là vào chế độ Nhặt Tim ngay
-                float reqDuration = (staticGesture == HandGestureType.Grab) ? 0.12f : 0.06f;
+                bool isNewGesture = (staticGesture != currentConfirmedGesture);
+                if (staticGesture == detectedCandidate)
+                {
+                    candidateDuration += dtStatic;
+                }
+                else
+                {
+                    detectedCandidate = staticGesture;
+                    candidateDuration = 0f;
+                }
 
-                if (candidateDuration >= reqDuration && cooldownTimer <= 0f)
+                // Chụm tay (Grab): kích hoạt NGAY ở frame đầu tiên; Tường chắn (OpenPalm): 0.03s
+                float reqDuration = (staticGesture == HandGestureType.Grab) ? 0.0f : 0.03f;
+
+                if (candidateDuration >= reqDuration && (isNewGesture || cooldownTimer <= 0f))
                 {
                     ConfirmGesture(staticGesture);
                     candidateDuration = 0f;
-                    cooldownTimer = 0.20f;
                 }
             }
             else
             {
-                detectedCandidate = staticGesture;
+                detectedCandidate = HandGestureType.None;
                 candidateDuration = 0f;
             }
         }
@@ -270,39 +306,48 @@ public class GestureRecognizer : MonoBehaviour
         }
     }
 
-    private void SmoothLandmarks(HandLandmarkResult raw)
+    private void SmoothLandmarks(HandLandmarkResult raw, bool snapImmediate = false)
     {
         smoothedResult.confidence = raw.confidence;
         smoothedResult.isRightHand = raw.isRightHand;
         smoothedResult.handWidth = raw.handWidth;
         smoothedResult.handHeight = raw.handHeight;
+        smoothedResult.fillRatio = raw.fillRatio;
+        smoothedResult.fingerPeaks = raw.fingerPeaks;
+        smoothedResult.isMoving = raw.isMoving;
         smoothedResult.centroid = raw.centroid;
 
+        float t = snapImmediate ? 1.0f : 0.72f;
         for (int i = 0; i < 21; i++)
         {
-            smoothedResult.landmarks[i] = Vector3.Lerp(smoothedResult.landmarks[i], raw.landmarks[i], 0.45f);
+            smoothedResult.landmarks[i] = snapImmediate
+                ? raw.landmarks[i]
+                : Vector3.Lerp(smoothedResult.landmarks[i], raw.landmarks[i], t);
         }
     }
 
     public void ConfirmGesture(HandGestureType gesture)
     {
         currentConfirmedGesture = gesture;
-        cooldownTimer = (gesture == HandGestureType.Slash) ? slashCooldown : ((gesture == HandGestureType.Grab) ? 0.35f : gestureCooldown);
-
         if (gesture == HandGestureType.Slash)
         {
-            // Khóa Grab sau khi chém; chỉ mở khóa khi người chơi mở tay ra.
-            grabNeedsReleaseAfterSlash = true;
+            slashCooldownTimer = Mathf.Max(slashCooldown, 0.14f);
             Debug.Log($"<color=red><b>[GestureRecognizer] ⚔️ ĐÃ NHẬN DIỆN CHÉM QUÁI!</b> Vận tốc: {currentHandSpeed:F2} m/s</color>");
         }
         else if (gesture == HandGestureType.OpenPalm)
         {
+            cooldownTimer = 0.15f;
             Debug.Log($"<color=cyan><b>[GestureRecognizer] 🛡️ ĐÃ BẬT TƯỜNG CHẮN!</b> Bàn tay mở thẳng giơ cao</color>");
         }
         else if (gesture == HandGestureType.Grab)
         {
+            cooldownTimer = 0.18f;
             isHoldingObject = true;
-            Debug.Log($"<color=orange><b>[GestureRecognizer] ✊ ĐÃ LẤY VẬT PHẨM / TRÁI TIM!</b> Chụm ngón cái và ngón trỏ</color>");
+            Debug.Log($"<color=orange><b>[GestureRecognizer] ✊ ĐÃ LẤY VẬT PHẨM / TRÁI TIM!</b> Chụm tay</color>");
+        }
+        else
+        {
+            cooldownTimer = gestureCooldown;
         }
 
         OnGestureConfirmed?.Invoke(gesture);

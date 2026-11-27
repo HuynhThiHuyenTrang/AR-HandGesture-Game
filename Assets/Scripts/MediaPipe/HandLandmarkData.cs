@@ -71,6 +71,12 @@ public class HandLandmarkResult
     [Tooltip("Kích thước bàn tay chuẩn hóa (Rộng x Cao)")]
     public float handWidth = 0f;
     public float handHeight = 0f;
+    [Tooltip("Mật độ lấp đầy pixel da trong khung bao (cao = chụm/nắm tay, thấp = xòe ngón)")]
+    public float fillRatio = 0f;
+    [Tooltip("Số đỉnh ngón tay tách biệt ở mép trên bàn tay (xòe tay >= 2, mặt/nắm tay <= 1)")]
+    public int fingerPeaks = 0;
+    [Tooltip("Bàn tay có chuyển động gần đây (phân biệt tay giơ lên với khuôn mặt đứng yên)")]
+    public bool isMoving = false;
     public Vector3 centroid = Vector3.zero;
 
     public HandLandmarkResult()

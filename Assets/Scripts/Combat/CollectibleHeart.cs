@@ -15,7 +15,7 @@ public class CollectibleHeart : MonoBehaviour
     [SerializeField] private int healAmount = 30;
 
     [Tooltip("Thời gian tồn tại tối đa trước khi tự biến mất (giây)")]
-    [SerializeField] private float lifetime = 3.0f;
+    [SerializeField] private float lifetime = 12.0f;
 
     [Header("--- HIỆU ỨNG CHUYỂN ĐỘNG ---")]
     [SerializeField] private float rotationSpeed = 90.0f;
@@ -112,7 +112,7 @@ public class CollectibleHeart : MonoBehaviour
 
         Vector3 startFlyPos = transform.position;
         Vector3 startScale = transform.localScale;
-        float duration = 0.25f;
+        float duration = 0.12f;
         float elapsed = 0f;
 
         while (elapsed < duration)
