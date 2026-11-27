@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
 
 /// <summary>
 /// Bộ quản lý sinh quái vật tự động theo Cấp độ (Level 1 đến Level 5)
@@ -48,10 +50,14 @@ public class MonsterSpawner : MonoBehaviour
     private float heartSpawnTimer = 0f;
 
     private List<GameObject> activeMonsters = new List<GameObject>();
+    private readonly List<ARRaycastHit> arHits = new List<ARRaycastHit>();
+    private ARRaycastManager arRaycastManager;
+    private ARPlaneManager arPlaneManager;
     private float spawnTimer = 0f;
     private int monstersSpawnedInCurrentLevel = 0;
     private bool hasSpawnedBossInLevel5 = false;
     private float pauseSpawnTimer = 0f;
+    private bool isGameStarted = false;
 
     void Awake()
     {
@@ -59,22 +65,31 @@ public class MonsterSpawner : MonoBehaviour
             Instance = this;
         else
             Destroy(gameObject);
+
+        arRaycastManager = FindAnyObjectByType<ARRaycastManager>();
+        arPlaneManager = FindAnyObjectByType<ARPlaneManager>();
     }
 
     void Start()
     {
         UpdateSpawnIntervalForLevel(currentLevel);
+    }
 
-        // Sinh ngay quái vật đầu tiên sau 0.2s để người chơi thấy quái vật ngay lập tức khi bắt đầu game
+    public void StartGame()
+    {
+        if (isGameStarted) return;
+        isGameStarted = true;
+        spawnTimer = 0f;
+        heartSpawnTimer = 0f;
         StartCoroutine(InitialSpawnDelay());
-
-        // Sinh trái tim hồi máu đầu tiên ngay sau 0.5s để người chơi có thể test hút tim lập tức
         StartCoroutine(InitialHeartDelay());
     }
 
+    public bool IsGameStarted() => isGameStarted;
+
     private IEnumerator InitialSpawnDelay()
     {
-        yield return new WaitForSeconds(0.2f);
+        yield return new WaitForSeconds(0.05f);
         if (autoSpawn && activeMonsters.Count < maxMonstersAlive)
         {
             SpawnOneMonster();
@@ -89,6 +104,9 @@ public class MonsterSpawner : MonoBehaviour
 
     void Update()
     {
+        if (!isGameStarted)
+            return;
+
         activeMonsters.RemoveAll(m => m == null || (m.TryGetComponent<MonsterController>(out var mc) && mc.IsDead()));
 
         // Đang trong thời gian nghỉ ngơi 2 giây giữa các màn (Level Transition Pause)
@@ -101,9 +119,10 @@ public class MonsterSpawner : MonoBehaviour
         if (!autoSpawn)
             return;
 
-        // 1. Quản lý sinh quái vật theo chu kỳ cấp độ
+        // 1. Quản lý sinh quái vật theo chu kỳ cấp độ (nếu sân trống thì sinh nhanh hơn trong 1.2s)
+        float effectiveInterval = (activeMonsters.Count == 0) ? Mathf.Min(spawnInterval, 1.2f) : spawnInterval;
         spawnTimer += Time.deltaTime;
-        if (spawnTimer >= spawnInterval)
+        if (spawnTimer >= effectiveInterval)
         {
             spawnTimer = 0f;
             if (activeMonsters.Count < maxMonstersAlive)
@@ -190,16 +209,13 @@ public class MonsterSpawner : MonoBehaviour
         forwardDirection.y = 0;
         forwardDirection.Normalize();
 
-        // Tọa độ xuất hiện: cách người chơi spawnDistance mét
-        Vector3 spawnPosition = camTransform.position + forwardDirection * spawnDistance;
-
-        // Slime đứng trước mặt ở tầm ngực/bụng; Bat bay ở tầm mắt/đầu
-        float spawnY = camTransform.position.y - 0.20f;
-        if (isFlying)
+        // Tọa độ xuất hiện: ưu tiên đặt lên mặt phẳng AR Plane (mặt đất / bàn / vật thật) nếu đã quét được
+        Vector3 spawnPosition;
+        if (!TryGetARPlaneSpawnPosition(camTransform, forwardDirection, isFlying, out spawnPosition))
         {
-            spawnY = camTransform.position.y + 0.35f;
+            spawnPosition = camTransform.position + forwardDirection * spawnDistance;
+            spawnPosition.y = isFlying ? (camTransform.position.y + 0.35f) : (camTransform.position.y - 0.20f);
         }
-        spawnPosition.y = spawnY;
 
         // Quái vật quay mặt thẳng về phía người chơi
         Quaternion lookRotation = Quaternion.LookRotation(camTransform.position - spawnPosition);
@@ -234,6 +250,63 @@ public class MonsterSpawner : MonoBehaviour
         activeMonsters.Add(monster);
         Debug.Log($"<color=green><b>[MonsterSpawner]</b> Đã sinh quái vật {monster.name} tại {spawnPosition} (Level: {currentLevel}, Hiện có: {activeMonsters.Count}/{maxMonstersAlive} quái)!</color>");
         return monster;
+    }
+
+    private bool TryGetARPlaneSpawnPosition(Transform camTransform, Vector3 forwardDirection, bool isFlying, out Vector3 resultPos)
+    {
+        resultPos = Vector3.zero;
+        if (camTransform == null)
+            return false;
+
+        // 1. Bắn tia AR Raycast vào các mặt phẳng AR đã phát hiện trên màn hình
+        if (arRaycastManager != null && arRaycastManager.enabled)
+        {
+            Vector2 screenPt = new Vector2(Screen.width * Random.Range(0.28f, 0.72f), Screen.height * Random.Range(0.30f, 0.65f));
+            if (arRaycastManager.Raycast(screenPt, arHits, TrackableType.PlaneWithinPolygon))
+            {
+                for (int i = 0; i < arHits.Count; i++)
+                {
+                    float dist = Vector3.Distance(camTransform.position, arHits[i].pose.position);
+                    if (dist >= 0.7f && dist <= 5.5f)
+                    {
+                        resultPos = arHits[i].pose.position;
+                        if (isFlying) resultPos.y += 0.65f;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback sang danh sách ARPlane đang theo dõi (mặt đất / bề mặt vật thể)
+        if (arPlaneManager != null && arPlaneManager.enabled && arPlaneManager.trackables.count > 0)
+        {
+            ARPlane bestPlane = null;
+            float bestDist = float.MaxValue;
+            foreach (ARPlane plane in arPlaneManager.trackables)
+            {
+                if (plane == null || plane.trackingState != TrackingState.Tracking)
+                    continue;
+                if (plane.alignment == PlaneAlignment.Vertical)
+                    continue;
+
+                float d = Vector3.Distance(camTransform.position, plane.center);
+                if (d < bestDist && d <= 6.0f)
+                {
+                    bestDist = d;
+                    bestPlane = plane;
+                }
+            }
+
+            if (bestPlane != null)
+            {
+                Vector3 candidate = camTransform.position + forwardDirection * Mathf.Clamp(bestDist, 1.4f, spawnDistance);
+                candidate.y = bestPlane.center.y + (isFlying ? 0.65f : 0f);
+                resultPos = candidate;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public void SetLevel(int level)

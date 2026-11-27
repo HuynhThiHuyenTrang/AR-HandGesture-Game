@@ -39,6 +39,9 @@ public class PlaceObjectOnPlane : MonoBehaviour
 
     void Update()
     {
+        if (GameHUDController.Instance != null && !GameHUDController.Instance.IsGameStarted())
+            return;
+
         // --- 1. XỬ LÝ THEO NEW INPUT SYSTEM (CHUẨN UNITY 6) ---
         #if ENABLE_INPUT_SYSTEM
         // Phím SPACEBAR để sinh quái vật nhanh
@@ -109,8 +112,20 @@ public class PlaceObjectOnPlane : MonoBehaviour
         if (raycastManager != null && raycastManager.Raycast(screenPosition, hits, TrackableType.Planes))
         {
             Pose hitPose = hits[0].pose;
-            GameObject spawned = Instantiate(cubePrefab, hitPose.position, hitPose.rotation);
+            Camera camMain = Camera.main;
+            Quaternion rot = hitPose.rotation;
+            if (camMain != null)
+            {
+                Vector3 dir = camMain.transform.position - hitPose.position;
+                dir.y = 0f;
+                if (dir.sqrMagnitude > 0.001f) rot = Quaternion.LookRotation(dir);
+            }
+            GameObject spawned = Instantiate(cubePrefab, hitPose.position, rot);
             spawned.transform.localScale = Vector3.one * 50.0f;
+            if (spawned.TryGetComponent<MonsterController>(out var mc) && MonsterSpawner.Instance != null)
+            {
+                mc.SetupMonsterLevel(MonsterSpawner.Instance.GetCurrentLevel(), false);
+            }
             Debug.Log($"<color=green>[PlaceObjectOnPlane] Đã sinh quái vật trên mặt phẳng AR tại: {hitPose.position} (Scale: 50x ~ 1.3m)</color>");
             return;
         }

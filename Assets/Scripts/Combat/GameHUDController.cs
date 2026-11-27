@@ -81,6 +81,27 @@ public class GameHUDController : MonoBehaviour
     private GUIStyle cachedSkillLabelStyle;
     private MonsterController cachedBoss;
     private float nextBossScanTime = 0f;
+    private bool isGameStarted = false;
+    private GUIStyle cachedLobbyTitleStyle;
+    private GUIStyle cachedLobbySubStyle;
+    private GUIStyle cachedPlayBtnStyle;
+
+    public bool IsGameStarted() => isGameStarted;
+
+    public void StartGame(bool broadcastToDocker = true)
+    {
+        if (isGameStarted) return;
+        isGameStarted = true;
+        if (broadcastToDocker && AdafruitIOBridge.Instance != null)
+        {
+            AdafruitIOBridge.Instance.NotifyGameStartedToDocker();
+        }
+        if (MonsterSpawner.Instance != null)
+        {
+            MonsterSpawner.Instance.StartGame();
+        }
+        Debug.Log("<color=green><b>[GameHUDController] ▶ BẮT ĐẦU TRẬN CHIẾN!</b></color>");
+    }
 
     void Awake()
     {
@@ -345,16 +366,17 @@ public class GameHUDController : MonoBehaviour
         if (cachedHeartStyle == null)
         {
             cachedHeartStyle = new GUIStyle { fontSize = 24, alignment = TextAnchor.MiddleCenter };
+            cachedHeartStyle.normal.textColor = new Color(1f, 0.22f, 0.35f, 1f);
             cachedScoreStyle = new GUIStyle { fontSize = 18, fontStyle = FontStyle.Bold };
             cachedScoreStyle.normal.textColor = Color.white;
             cachedComboStyle = new GUIStyle { fontSize = 17, fontStyle = FontStyle.Bold };
             cachedLevelStyle = new GUIStyle { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
             cachedLevelStyle.normal.textColor = Color.white;
-            cachedSkullStyle = new GUIStyle { fontSize = 18, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft };
+            cachedSkullStyle = new GUIStyle { fontSize = 16, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft };
             cachedSkullStyle.normal.textColor = Color.white;
         }
 
-        GUI.Label(new Rect(32, 22, 35, 42), "❤️", cachedHeartStyle);
+        GUI.Label(new Rect(32, 22, 35, 42), "♥", cachedHeartStyle);
 
         DrawColorRect(new Rect(72, 34, 160, 18), new Color(0.1f, 0.1f, 0.1f, 0.9f));
         if (hpPercent > 0)
@@ -370,7 +392,7 @@ public class GameHUDController : MonoBehaviour
         if (combo >= 2)
         {
             cachedComboStyle.normal.textColor = (combo >= 3) ? new Color(1f, 0.88f, 0.2f, 1f) : new Color(0.2f, 0.9f, 1f, 1f);
-            string comboText = (combo >= 3) ? $"⚡ COMBO x{combo} (CHÍ MẠNG!)" : $"🔥 COMBO x{combo}";
+            string comboText = (combo >= 3) ? $"COMBO x{combo} (CHI MANG!)" : $"COMBO x{combo}";
             GUI.Label(new Rect(28, 96, 260, 25), comboText, cachedComboStyle);
         }
 
@@ -396,16 +418,16 @@ public class GameHUDController : MonoBehaviour
         GUI.DrawTexture(new Rect(rightPanelX, 18, rightPanelW, 36), darkBgTex);
         DrawBorder(new Rect(rightPanelX, 18, rightPanelW, 36), new Color(0.2f, 0.7f, 1f, 0.8f), 2);
 
-        GUI.Label(new Rect(rightPanelX + 12, 18, 30, 36), "💀", cachedSkullStyle);
-        GUI.Label(new Rect(rightPanelX + 48, 18, 105, 36), $"{monstersKilledInLevel} / {totalMonstersPerLevel}", cachedSkullStyle);
+        GUI.Label(new Rect(rightPanelX + 12, 18, 42, 36), "Diệt:", cachedSkullStyle);
+        GUI.Label(new Rect(rightPanelX + 56, 18, 96, 36), $"{monstersKilledInLevel} / {totalMonstersPerLevel}", cachedSkullStyle);
 
         // Ô 2: Số quái vật đang xuất hiện trước mắt người chơi
         int aliveCount = MonsterSpawner.Instance != null ? MonsterSpawner.Instance.GetAliveMonsterCount() : 0;
         GUI.DrawTexture(new Rect(rightPanelX, 60, rightPanelW, 36), darkBgTex);
         DrawBorder(new Rect(rightPanelX, 60, rightPanelW, 36), new Color(0.2f, 0.7f, 1f, 0.8f), 2);
 
-        GUI.Label(new Rect(rightPanelX + 12, 60, 30, 36), "👾", cachedSkullStyle);
-        GUI.Label(new Rect(rightPanelX + 48, 60, 105, 36), $"{aliveCount} Quái", cachedSkullStyle);
+        GUI.Label(new Rect(rightPanelX + 12, 60, 42, 36), "Quái:", cachedSkullStyle);
+        GUI.Label(new Rect(rightPanelX + 60, 60, 92, 36), $"{aliveCount}", cachedSkullStyle);
 
         // =========================================================================
         // 4. TÂM MÀN HÌNH: TÂM NGẮM (HOÀN TOÀN TẮT ĐỂ KHÔNG VƯỚNG MẶT NGƯỜI CHƠI)
@@ -413,6 +435,12 @@ public class GameHUDController : MonoBehaviour
         if (showCrosshair && false)
         {
             DrawSciFiCrosshair(sw / 2f, sh / 2f);
+        }
+
+        if (!isGameStarted)
+        {
+            DrawStartLobbyOverlay(sw, sh);
+            return;
         }
 
         // =========================================================================
@@ -427,17 +455,17 @@ public class GameHUDController : MonoBehaviour
         bool isShieldOn = PlayerCombatController.Instance != null && PlayerCombatController.Instance.IsShieldActive();
 
         // Nút 1: Lấy trái tim / vật phẩm (Chụm cả bàn tay lại)
-        DrawSkillButton(new Rect(skillStartX, skillY, skillSize, skillSize), "❤️", "Lấy tim/Đồ", isItemPickupFxActive || isHeartHealFxActive, () => {
+        DrawSkillButton(new Rect(skillStartX, skillY, skillSize, skillSize), "♥", "Lấy tim/Đồ", isItemPickupFxActive || isHeartHealFxActive, () => {
             if (PlayerCombatController.Instance != null) PlayerCombatController.Instance.ExecuteGrabItem();
         });
 
         // Nút 2: Tường chắn (Thẳng bàn tay mở)
-        DrawSkillButton(new Rect(skillStartX + skillSpacing, skillY, skillSize, skillSize), "🛡️", "Tường chắn", isShieldOn, () => {
+        DrawSkillButton(new Rect(skillStartX + skillSpacing, skillY, skillSize, skillSize), "[O]", "Tường chắn", isShieldOn, () => {
             if (PlayerCombatController.Instance != null) PlayerCombatController.Instance.ActivateShield(2.5f);
         });
 
         // Nút 3: Chém quái (Vung tay chém)
-        DrawSkillButton(new Rect(skillStartX + skillSpacing * 2, skillY, skillSize, skillSize), "⚔️", "Chém quái", isSlashFxActive, () => {
+        DrawSkillButton(new Rect(skillStartX + skillSpacing * 2, skillY, skillSize, skillSize), "X", "Chém quái", isSlashFxActive, () => {
             if (PlayerCombatController.Instance != null) PlayerCombatController.Instance.ExecuteSlashAttack();
         });
 
@@ -500,6 +528,73 @@ public class GameHUDController : MonoBehaviour
         }
     }
 
+    private void DrawStartLobbyOverlay(int sw, int sh)
+    {
+        if (AdafruitIOBridge.Instance != null && AdafruitIOBridge.Instance.IsServerConfigOpen())
+            return;
+
+        bool isConnected = AdafruitIOBridge.Instance != null && AdafruitIOBridge.Instance.IsConnected();
+        bool isDocker = AdafruitIOBridge.Instance != null && AdafruitIOBridge.Instance.IsUsingDocker();
+
+        float panelW = Mathf.Min(sw * 0.88f, 380f);
+        float panelH = 230f;
+        float panelX = (sw - panelW) / 2f;
+        float panelY = (sh - panelH) / 2f;
+
+        DrawColorRect(new Rect(panelX, panelY, panelW, panelH), new Color(0.03f, 0.10f, 0.20f, 0.90f));
+        DrawBorder(new Rect(panelX, panelY, panelW, panelH), isConnected ? new Color(0.2f, 1f, 0.5f, 1f) : new Color(0.2f, 0.7f, 1f, 0.9f), 2);
+
+        if (cachedLobbyTitleStyle == null)
+        {
+            cachedLobbyTitleStyle = new GUIStyle { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            cachedLobbyTitleStyle.normal.textColor = Color.white;
+            cachedLobbySubStyle = new GUIStyle { fontSize = 14, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            cachedPlayBtnStyle = new GUIStyle { fontSize = 18, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            cachedPlayBtnStyle.normal.textColor = Color.white;
+        }
+
+        GUI.Label(new Rect(panelX, panelY + 16, panelW, 34), "AR MONSTER HUNTER", cachedLobbyTitleStyle);
+
+        cachedLobbySubStyle.normal.textColor = isConnected ? new Color(0.25f, 1f, 0.45f, 1f) : new Color(1f, 0.72f, 0.25f, 1f);
+        string modeLabel = isDocker ? "Docker + Adafruit IO" : "Adafruit IO";
+        string detailMsg = AdafruitIOBridge.Instance != null ? AdafruitIOBridge.Instance.GetStatusMessage() : "";
+        string statusText = isConnected ? $"● ĐÃ KẾT NỐI ({modeLabel})" : $"○ {detailMsg}";
+        GUI.Label(new Rect(panelX + 12, panelY + 56, panelW - 24, 26), statusText, cachedLobbySubStyle);
+
+        // Nút mở nhanh cấu hình IP Docker ngay ở màn hình chờ
+        Rect ipBtnRect = new Rect(panelX + (panelW - 180f) / 2f, panelY + 90, 180f, 30f);
+        DrawColorRect(ipBtnRect, new Color(0.12f, 0.25f, 0.42f, 0.95f));
+        DrawBorder(ipBtnRect, new Color(0.35f, 0.75f, 1f, 0.8f), 1);
+        if (GUI.Button(ipBtnRect, "Cấu hình IP Docker", cachedLobbySubStyle))
+        {
+            if (AdafruitIOBridge.Instance != null)
+            {
+                AdafruitIOBridge.Instance.ToggleServerConfig();
+            }
+        }
+
+        // Nút PLAY chính: sáng lên khi đã kết nối thành công
+        Rect playRect = new Rect(panelX + (panelW - 210f) / 2f, panelY + 136, 210f, 48f);
+        Color playBg = isConnected ? new Color(0.10f, 0.68f, 0.32f, 0.98f) : new Color(0.25f, 0.28f, 0.34f, 0.85f);
+        Color playBorder = isConnected ? new Color(0.4f, 1f, 0.6f, 1f) : new Color(0.5f, 0.5f, 0.55f, 0.7f);
+        DrawColorRect(playRect, playBg);
+        DrawBorder(playRect, playBorder, 2);
+
+        string playLabel = isConnected ? "> PLAY" : "CHỜ KẾT NỐI...";
+        if (GUI.Button(playRect, playLabel, cachedPlayBtnStyle) && isConnected)
+        {
+            StartGame();
+        }
+
+        // Nút dự phòng nếu muốn chơi Offline không cần mạng
+        Rect offlineRect = new Rect(panelX + (panelW - 160f) / 2f, panelY + 192, 160f, 24f);
+        cachedLobbySubStyle.normal.textColor = new Color(0.75f, 0.82f, 0.90f, 0.85f);
+        if (GUI.Button(offlineRect, "Chơi Offline", cachedLobbySubStyle))
+        {
+            StartGame();
+        }
+    }
+
     private void DrawSkillButton(Rect rect, string icon, string label, bool isActive, System.Action onClick)
     {
         Color bgColor = isActive ? new Color(0.1f, 0.45f, 0.85f, 0.95f) : new Color(0.05f, 0.15f, 0.25f, 0.75f);
@@ -511,9 +606,16 @@ public class GameHUDController : MonoBehaviour
 
         if (cachedSkillIconStyle == null)
         {
-            cachedSkillIconStyle = new GUIStyle { fontSize = 24, alignment = TextAnchor.MiddleCenter };
+            cachedSkillIconStyle = new GUIStyle { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
             cachedSkillLabelStyle = new GUIStyle { fontSize = 11, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
         }
+        if (icon == "♥")
+            cachedSkillIconStyle.normal.textColor = new Color(1f, 0.28f, 0.42f, 1f);
+        else if (icon == "[O]")
+            cachedSkillIconStyle.normal.textColor = new Color(0.25f, 0.92f, 1f, 1f);
+        else
+            cachedSkillIconStyle.normal.textColor = new Color(1f, 0.85f, 0.3f, 1f);
+
         GUI.Label(new Rect(rect.x, rect.y + 6, rect.width, 32), icon, cachedSkillIconStyle);
 
         cachedSkillLabelStyle.normal.textColor = isActive ? new Color(1f, 0.95f, 0.3f, 1f) : Color.white;

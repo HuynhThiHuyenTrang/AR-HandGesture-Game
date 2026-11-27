@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using Unity.Collections;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
@@ -62,6 +63,16 @@ public class ARCameraStreamBridge : MonoBehaviour
     private Color32[] flippedPixels;
     private Camera cachedMainCamera;
     private bool isCameraInitialized = false;
+    private bool receivedAnyARFrame = false;
+
+    // Truyền nền cam sau từ Điện thoại -> Máy tính qua DockerBridge
+    private Texture2D remoteRearCameraTexture;
+    private bool isUsingRemoteRearBackground = false;
+    private float lastRemoteFrameReceivedTime = -10f;
+    private int lastRemoteFrameId = 0;
+    private int remoteCameraRot = 0;
+    private bool isSendingRemoteFrame = false;
+    private float lastRemoteSendTime = 0f;
 
     void Awake()
     {
@@ -112,6 +123,44 @@ public class ARCameraStreamBridge : MonoBehaviour
         if (isCameraInitialized) return;
         isCameraInitialized = true;
 
+#if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_IOS)
+        // ĐIỆN THOẠI: Dùng Camera SAU (World) của AR Foundation để thu bối cảnh + AR Plane (mặt đất, vật thể) dựng quái
+        ARSession arSession = FindAnyObjectByType<ARSession>();
+        ARCameraBackground bg = FindAnyObjectByType<ARCameraBackground>();
+        ARPlaneManager planeManager = FindAnyObjectByType<ARPlaneManager>();
+
+        if (arCameraManager == null)
+        {
+            arCameraManager = FindAnyObjectByType<ARCameraManager>();
+        }
+
+        if (arCameraManager != null)
+        {
+            // Bật lại sau khi đã có quyền Camera để ARCore không bị kẹt ở trạng thái chưa cấp quyền
+            arCameraManager.enabled = false;
+            if (bg != null) bg.enabled = false;
+
+            if (arSession != null)
+            {
+                arSession.enabled = true;
+                arSession.Reset();
+            }
+
+            arCameraManager.requestedFacingDirection = CameraFacingDirection.World;
+            arCameraManager.enabled = true;
+            if (bg != null) bg.enabled = true;
+            if (planeManager != null) planeManager.enabled = true;
+
+            arCameraManager.frameReceived -= OnARCameraFrameReceived;
+            arCameraManager.frameReceived += OnARCameraFrameReceived;
+            isUsingARCamera = true;
+            Debug.Log("<color=green><b>[ARCameraStreamBridge] ĐÃ BẬT CAMERA SAU AR FOUNDATION & AR PLANE TRÊN ĐIỆN THOẠI!</b></color>");
+
+            StartCoroutine(EnsureARCameraOrFallbackRoutine());
+            return;
+        }
+#else
+        // MÁY TÍNH (PC / Unity Editor): Dùng Camera trước (Webcam) để nhận diện bàn tay chém quái
         if (arCameraManager != null)
         {
             arCameraManager.enabled = false;
@@ -137,8 +186,9 @@ public class ARCameraStreamBridge : MonoBehaviour
             if (create3DBackgroundQuadOnPC)
             {
                 SetupPCBackgroundQuad();
+                StartCoroutine(PollRemoteRearCameraRoutine());
             }
-            Debug.Log("<color=green><b>[ARCameraStreamBridge] ĐÃ BẬT THÀNH CÔNG CAMERA TRƯỚC VÀ KHỞI TẠO NỀN 3D!</b></color>");
+            Debug.Log("<color=green><b>[ARCameraStreamBridge] ĐÃ BẬT CAMERA TRƯỚC TRÊN MÁY TÍNH ĐỂ NHẬN DIỆN TAY!</b></color>");
             return;
         }
 
@@ -149,6 +199,7 @@ public class ARCameraStreamBridge : MonoBehaviour
             isUsingARCamera = true;
             Debug.Log("[ARCameraStreamBridge] Dùng luồng fallback CPU từ AR Foundation.");
         }
+#endif
     }
 
     void OnDestroy()
@@ -166,6 +217,11 @@ public class ARCameraStreamBridge : MonoBehaviour
         if (cameraTexture != null)
         {
             Destroy(cameraTexture);
+        }
+
+        if (remoteRearCameraTexture != null)
+        {
+            Destroy(remoteRearCameraTexture);
         }
 
         if (pcBackgroundQuad != null)
@@ -365,7 +421,7 @@ public class ARCameraStreamBridge : MonoBehaviour
         }
         Camera cam = cachedMainCamera;
 
-        if (pcBackgroundQuad == null || cam == null || pcWebCamTexture == null)
+        if (pcBackgroundQuad == null || cam == null)
             return;
 
         float distance = backgroundQuadDistance;
@@ -373,6 +429,38 @@ public class ARCameraStreamBridge : MonoBehaviour
         float width = height * cam.aspect;
 
         pcBackgroundQuad.transform.localPosition = new Vector3(0, 0, distance);
+
+        // Nếu đang ghép nền cam sau từ điện thoại lên PC -> xoay đúng góc cảm biến & giữ đúng tỉ lệ khung hình (không méo)
+        if (isUsingRemoteRearBackground && remoteRearCameraTexture != null)
+        {
+            int totalRemoteRot = remoteCameraRot % 360;
+            if (totalRemoteRot < 0) totalRemoteRot += 360;
+            bool rot90or270 = (totalRemoteRot == 90 || totalRemoteRot == 270);
+
+            float rawTexAspect = (float)remoteRearCameraTexture.width / Mathf.Max(1, remoteRearCameraTexture.height);
+            float visualAspect = rot90or270 ? (1.0f / rawTexAspect) : rawTexAspect;
+
+            float quadW, quadH;
+            if (cam.aspect >= visualAspect)
+            {
+                quadW = width;
+                quadH = width / visualAspect;
+            }
+            else
+            {
+                quadH = height;
+                quadW = height * visualAspect;
+            }
+
+            pcBackgroundQuad.transform.localRotation = Quaternion.Euler(0, 0, -totalRemoteRot);
+            pcBackgroundQuad.transform.localScale = rot90or270
+                ? new Vector3(quadH, quadW, 1.0f)
+                : new Vector3(quadW, quadH, 1.0f);
+            return;
+        }
+
+        if (pcWebCamTexture == null)
+            return;
 
         int totalRot = (pcWebCamTexture.videoRotationAngle + extraRotationAngle) % 360;
         if (totalRot < 0) totalRot += 360;
@@ -400,7 +488,7 @@ public class ARCameraStreamBridge : MonoBehaviour
         }
     }
 
-    private void InitFrontWebCam()
+    private void InitFrontWebCam(bool preferRearCamera = false)
     {
         WebCamDevice[] devices = WebCamTexture.devices;
         Debug.Log($"<color=cyan>[ARCameraStreamBridge] Đang dò tìm Camera... Số lượng thiết bị tìm thấy: {devices.Length}</color>");
@@ -408,16 +496,22 @@ public class ARCameraStreamBridge : MonoBehaviour
         if (devices.Length > 0)
         {
             string chosenDevice = devices[0].name;
-            bool foundFront = false;
+            bool foundTarget = false;
 
             for (int i = 0; i < devices.Length; i++)
             {
                 Debug.Log($"[ARCameraStreamBridge] Camera #{i}: {devices[i].name} (isFrontFacing: {devices[i].isFrontFacing})");
-                if (devices[i].isFrontFacing && !foundFront)
+                bool match = preferRearCamera ? !devices[i].isFrontFacing : devices[i].isFrontFacing;
+                if (match && !foundTarget)
                 {
                     chosenDevice = devices[i].name;
-                    foundFront = true;
+                    foundTarget = true;
                 }
+            }
+
+            if (preferRearCamera)
+            {
+                mirrorHorizontalOnPC = false;
             }
 
             int reqW = 640;
@@ -430,7 +524,7 @@ public class ARCameraStreamBridge : MonoBehaviour
 
             pcWebCamTexture = new WebCamTexture(chosenDevice, reqW, reqH, 30);
             pcWebCamTexture.Play();
-            Debug.Log($"<color=green>[ARCameraStreamBridge] Đang phát Camera: {chosenDevice} (Camera trước: {foundFront})</color>");
+            Debug.Log($"<color=green>[ARCameraStreamBridge] Đang phát Camera: {chosenDevice} (Target matched: {foundTarget})</color>");
         }
         else
         {
@@ -462,8 +556,40 @@ public class ARCameraStreamBridge : MonoBehaviour
         Debug.Log($"[ARCameraStreamBridge] Lật dọc: {flipVertical}");
     }
 
+    private IEnumerator EnsureARCameraOrFallbackRoutine()
+    {
+        yield return new WaitForSeconds(4.5f);
+
+        if (receivedAnyARFrame ||
+            ARSession.state == ARSessionState.SessionTracking ||
+            ARSession.state == ARSessionState.SessionInitializing ||
+            ARSession.state == ARSessionState.Ready)
+            yield break;
+
+        Debug.LogWarning($"[ARCameraStreamBridge] ARCamera chưa có khung hình (ARSession.state={ARSession.state}). Chuyển sang WebCam sau dự phòng!");
+
+        if (arCameraManager != null)
+        {
+            arCameraManager.frameReceived -= OnARCameraFrameReceived;
+            arCameraManager.enabled = false;
+        }
+        ARCameraBackground bg = FindAnyObjectByType<ARCameraBackground>();
+        if (bg != null) bg.enabled = false;
+        ARSession arSession = FindAnyObjectByType<ARSession>();
+        if (arSession != null) arSession.enabled = false;
+
+        InitFrontWebCam(true);
+        if (pcWebCamTexture != null && pcWebCamTexture.isPlaying)
+        {
+            isUsingARCamera = false;
+            SetupPCBackgroundQuad();
+        }
+    }
+
     private void OnARCameraFrameReceived(ARCameraFrameEventArgs eventArgs)
     {
+        receivedAnyARFrame = true;
+
         if (Time.time - lastProcessTime < processInterval)
             return;
 
@@ -474,8 +600,9 @@ public class ARCameraStreamBridge : MonoBehaviour
 
         using (cpuImage)
         {
-            int tw = (Screen.height > Screen.width) ? 240 : 320;
-            int th = (Screen.height > Screen.width) ? 320 : 240;
+            // Giữ nguyên tỉ lệ ngang tự nhiên của cảm biến cam sau (320x240) để không bị bóp méo
+            int tw = 320;
+            int th = 240;
 
             var conversionParams = new XRCpuImage.ConversionParams
             {
@@ -503,12 +630,140 @@ public class ARCameraStreamBridge : MonoBehaviour
                 OnCameraPixelsReady.Invoke(flippedPixels, tw, th);
             }
 
+            bool applied = false;
             if (OnCameraFrameReady != null)
             {
                 cameraTexture.Apply(false);
+                applied = true;
                 OnCameraFrameReady.Invoke(cameraTexture);
             }
+
+#if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_IOS)
+            // Gửi khung hình cam sau lên DockerBridge để máy tính đè làm nền
+            if (!isSendingRemoteFrame && Time.time - lastRemoteSendTime >= 0.08f)
+            {
+                lastRemoteSendTime = Time.time;
+                if (!applied) cameraTexture.Apply(false);
+                byte[] jpg = cameraTexture.EncodeToJPG(45);
+                if (jpg != null && jpg.Length > 0)
+                {
+                    StartCoroutine(SendRemoteCameraFrameRoutine(jpg));
+                }
+            }
+#endif
         }
+    }
+
+    private string GetBridgeBaseUrl()
+    {
+        if (AdafruitIOBridge.Instance != null)
+        {
+            string url = AdafruitIOBridge.Instance.GetDockerBridgeUrl();
+            if (!string.IsNullOrEmpty(url)) return url.TrimEnd('/');
+        }
+        string saved = PlayerPrefs.GetString("DockerBridgeUrl", "http://localhost:8000");
+        return string.IsNullOrEmpty(saved) ? "http://localhost:8000" : saved.TrimEnd('/');
+    }
+
+    private int GetPhoneCameraRotationDeg()
+    {
+        // Ưu tiên cảm biến xoay vật lý (DeviceOrientation) để quay ngang/dọc vẫn đúng chiều ngay cả khi ĐT khóa xoay màn hình
+        switch (Input.deviceOrientation)
+        {
+            case DeviceOrientation.Portrait: return 270;
+            case DeviceOrientation.PortraitUpsideDown: return 90;
+            case DeviceOrientation.LandscapeLeft: return 0;
+            case DeviceOrientation.LandscapeRight: return 180;
+        }
+
+        switch (Screen.orientation)
+        {
+            case ScreenOrientation.Portrait: return 270;
+            case ScreenOrientation.PortraitUpsideDown: return 90;
+            case ScreenOrientation.LandscapeRight: return 180;
+            case ScreenOrientation.LandscapeLeft: return 0;
+            default: return (Screen.height > Screen.width) ? 270 : 0;
+        }
+    }
+
+    private IEnumerator SendRemoteCameraFrameRoutine(byte[] jpgBytes)
+    {
+        isSendingRemoteFrame = true;
+        int rot = GetPhoneCameraRotationDeg();
+        string url = $"{GetBridgeBaseUrl()}/camera_frame?rot={rot}";
+        using (UnityWebRequest req = new UnityWebRequest(url, "POST"))
+        {
+            req.uploadHandler = new UploadHandlerRaw(jpgBytes);
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.SetRequestHeader("Content-Type", "image/jpeg");
+            req.timeout = 2;
+            yield return req.SendWebRequest();
+        }
+        isSendingRemoteFrame = false;
+    }
+
+    private IEnumerator PollRemoteRearCameraRoutine()
+    {
+        WaitForSecondsRealtime wait = new WaitForSecondsRealtime(0.066f);
+        while (true)
+        {
+            string url = $"{GetBridgeBaseUrl()}/camera_frame?last_id={lastRemoteFrameId}";
+            using (UnityWebRequest req = UnityWebRequest.Get(url))
+            {
+                req.timeout = 2;
+                yield return req.SendWebRequest();
+
+                if (req.result == UnityWebRequest.Result.Success && req.responseCode == 200)
+                {
+                    byte[] data = req.downloadHandler.data;
+                    if (data != null && data.Length > 0)
+                    {
+                        string fidStr = req.GetResponseHeader("X-Frame-Id");
+                        if (int.TryParse(fidStr, out int fid))
+                        {
+                            lastRemoteFrameId = fid;
+                        }
+                        string rotStr = req.GetResponseHeader("X-Cam-Rot");
+                        if (int.TryParse(rotStr, out int camRot))
+                        {
+                            remoteCameraRot = camRot;
+                        }
+
+                        if (remoteRearCameraTexture == null)
+                        {
+                            remoteRearCameraTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                        }
+
+                        if (remoteRearCameraTexture.LoadImage(data, false))
+                        {
+                            lastRemoteFrameReceivedTime = Time.time;
+                            if (!isUsingRemoteRearBackground)
+                            {
+                                isUsingRemoteRearBackground = true;
+                                ApplyBackgroundTexture(remoteRearCameraTexture);
+                                Debug.Log("<color=cyan><b>[ARCameraStreamBridge] ĐÃ NHẬN NỀN CAM SAU TỪ ĐIỆN THOẠI ĐÈ LÊN PC!</b></color>");
+                            }
+                        }
+                    }
+                }
+                else if (isUsingRemoteRearBackground && Time.time - lastRemoteFrameReceivedTime > 3.5f)
+                {
+                    isUsingRemoteRearBackground = false;
+                    ApplyBackgroundTexture(pcWebCamTexture);
+                    Debug.Log("[ARCameraStreamBridge] Mất tín hiệu cam sau điện thoại, quay lại nền webcam PC.");
+                }
+            }
+            yield return wait;
+        }
+    }
+
+    private void ApplyBackgroundTexture(Texture tex)
+    {
+        if (pcBackgroundMat == null || tex == null) return;
+        if (pcBackgroundMat.HasProperty("_BaseMap"))
+            pcBackgroundMat.SetTexture("_BaseMap", tex);
+        if (pcBackgroundMat.HasProperty("_MainTex"))
+            pcBackgroundMat.SetTexture("_MainTex", tex);
     }
 
     public WebCamTexture GetWebCamTexture() => pcWebCamTexture;

@@ -2,7 +2,7 @@ import os
 import time
 import threading
 from typing import List
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 
@@ -20,9 +20,15 @@ control_state = {
     "set_level": 1,
     "pause_game": 0,
     "reset_ts": "",
+    "sync_started": False,
     "mqtt_connected": False,
 }
 telemetry_cache = {}
+camera_lock = threading.Lock()
+latest_camera_bytes: bytes = b""
+latest_camera_id: int = 0
+latest_camera_ts: float = 0.0
+latest_camera_rot: int = 0
 
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -113,3 +119,35 @@ def post_telemetry(batch: TelemetryBatch):
         published.append(item.key)
     print(f"[Unity -> MQTT] Published: {published}")
     return {"status": "ok", "published": published}
+
+
+@app.post("/camera_frame")
+async def post_camera_frame(request: Request, rot: int = 0):
+    global latest_camera_bytes, latest_camera_id, latest_camera_ts, latest_camera_rot
+    data = await request.body()
+    if not data:
+        return {"status": "empty"}
+    with camera_lock:
+        latest_camera_bytes = data
+        latest_camera_id += 1
+        latest_camera_ts = time.time()
+        latest_camera_rot = rot
+    return {"status": "ok", "frame_id": latest_camera_id}
+
+
+@app.post("/sync_start")
+def post_sync_start(started: bool = True):
+    with state_lock:
+        control_state["sync_started"] = started
+    return {"status": "ok", "sync_started": started}
+
+
+@app.get("/camera_frame")
+def get_camera_frame(last_id: int = 0):
+    with camera_lock:
+        if not latest_camera_bytes or latest_camera_id <= last_id or (time.time() - latest_camera_ts) > 3.0:
+            return Response(status_code=204)
+        data = latest_camera_bytes
+        fid = latest_camera_id
+        rot = latest_camera_rot
+    return Response(content=data, media_type="image/jpeg", headers={"X-Frame-Id": str(fid), "X-Cam-Rot": str(rot)})

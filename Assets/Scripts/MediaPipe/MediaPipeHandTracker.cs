@@ -46,6 +46,17 @@ public class MediaPipeHandTracker : MonoBehaviour
     private readonly int[] gridMovingCount = new int[GRID_SIZE];
     private readonly int[] gridBlobId = new int[GRID_SIZE];
     private readonly int[] bfsQueue = new int[GRID_SIZE];
+    private readonly int[] bgR = new int[GRID_SIZE];
+    private readonly int[] bgG = new int[GRID_SIZE];
+    private readonly int[] bgB = new int[GRID_SIZE];
+    private readonly int[] curCellSumR = new int[GRID_SIZE];
+    private readonly int[] curCellSumG = new int[GRID_SIZE];
+    private readonly int[] curCellSumB = new int[GRID_SIZE];
+    private readonly int[] curCellCount = new int[GRID_SIZE];
+    private int bgWarmupFrames = 0;
+    private bool hasActiveHandBox = false;
+    private int activeMinGx, activeMaxGx, activeMinGy, activeMaxGy;
+    private float activeHandHoldDuration = 0f;
     private int[] topYInColumn;
     private float lastHandMotionTime = -10f;
     private bool hasKnownFace = false;
@@ -185,10 +196,10 @@ public class MediaPipeHandTracker : MonoBehaviour
     }
 
     /// <summary>
-    /// Trích xuất bàn tay bằng lưới 2D Connected-Components (40x30) kết hợp bản đồ chuyển động:
-    /// - Tách biệt hoàn toàn bàn tay và khuôn mặt theo cả chiều ngang X lẫn chiều dọc Y.
-    /// - Khi vung tay chém, tâm điểm chuyển động (moving-skin) bám 1:1 theo bàn tay không trễ.
-    /// - Không cấp phát bộ nhớ tạm (Zero-GC).
+    /// Trích xuất bàn tay bằng lưới nền thích nghi 2D (40x30) + Connected-Components + nhận diện khuôn mặt:
+    /// - Chỉ xét pixel da NỔI BẬT KHÁC NỀN (loại bỏ hoàn toàn tường, biển gỗ, áo đỏ, mặt ngồi yên).
+    /// - Khi tay đứng yên (Tường chắn / Chụm tay), đóng băng nền vùng tay để không bị biến mất.
+    /// - Khi camera rung mạnh toàn khung hình, tự động cập nhật lại nền để không kích hoạt cử chỉ giả.
     /// </summary>
     private bool ExtractHandLandmarksFromPixels(Color32[] pixels, int width, int height)
     {
@@ -203,6 +214,7 @@ public class MediaPipeHandTracker : MonoBehaviour
         {
             prevPixelBuffer = new Color32[len];
             hasPrevPixelFrame = false;
+            bgWarmupFrames = 0;
         }
 
         if (topYInColumn == null || topYInColumn.Length != width)
@@ -213,10 +225,15 @@ public class MediaPipeHandTracker : MonoBehaviour
         Array.Clear(gridSkinCount, 0, GRID_SIZE);
         Array.Clear(gridMovingCount, 0, GRID_SIZE);
         Array.Clear(gridBlobId, 0, GRID_SIZE);
+        Array.Clear(curCellSumR, 0, GRID_SIZE);
+        Array.Clear(curCellSumG, 0, GRID_SIZE);
+        Array.Clear(curCellSumB, 0, GRID_SIZE);
+        Array.Clear(curCellCount, 0, GRID_SIZE);
 
         long moveSumX = 0;
         long moveSumY = 0;
         int moveSkinTotal = 0;
+        bool bgReady = (bgWarmupFrames >= 22);
 
         for (int y = scanMinY; y < scanMaxY; y += step)
         {
@@ -232,19 +249,41 @@ public class MediaPipeHandTracker : MonoBehaviour
                 Color32 prev = prevPixelBuffer[idx];
                 prevPixelBuffer[idx] = cur;
 
+                int gx = (x * GRID_W) / width;
+                if (gx >= GRID_W) gx = GRID_W - 1;
+                int cell = gRow + gx;
+
+                curCellSumR[cell] += cur.r;
+                curCellSumG[cell] += cur.g;
+                curCellSumB[cell] += cur.b;
+                curCellCount[cell]++;
+
+                if (!bgReady)
+                    continue;
+
                 if (IsSkinColorYCrCb(cur.r, cur.g, cur.b))
                 {
-                    int gx = (x * GRID_W) / width;
-                    if (gx >= GRID_W) gx = GRID_W - 1;
-                    int cell = gRow + gx;
-                    gridSkinCount[cell]++;
+                    int bdr = cur.r - bgR[cell]; if (bdr < 0) bdr = -bdr;
+                    int bdg = cur.g - bgG[cell]; if (bdg < 0) bdg = -bdg;
+                    int bdb = cur.b - bgB[cell]; if (bdb < 0) bdb = -bdb;
+                    int bgDiff = bdr + bdg + bdb;
 
+                    int frameDiff = 0;
                     if (hasPrevPixelFrame)
                     {
                         int dr = cur.r - prev.r; if (dr < 0) dr = -dr;
                         int dg = cur.g - prev.g; if (dg < 0) dg = -dg;
                         int db = cur.b - prev.b; if (db < 0) db = -db;
-                        if (dr + dg + db > 34)
+                        frameDiff = dr + dg + db;
+                    }
+
+                    bool inActiveBox = hasActiveHandBox && gx >= activeMinGx && gx <= activeMaxGx && gy >= activeMinGy && gy <= activeMaxGy;
+
+                    if (bgDiff > 32 || (inActiveBox && frameDiff > 24))
+                    {
+                        gridSkinCount[cell]++;
+
+                        if (frameDiff > 34)
                         {
                             gridMovingCount[cell]++;
                             moveSumX += x;
@@ -256,6 +295,78 @@ public class MediaPipeHandTracker : MonoBehaviour
             }
         }
         hasPrevPixelFrame = true;
+
+        if (!bgReady)
+        {
+            for (int c = 0; c < GRID_SIZE; c++)
+            {
+                int cnt = curCellCount[c];
+                if (cnt > 0)
+                {
+                    int ar = curCellSumR[c] / cnt;
+                    int ag = curCellSumG[c] / cnt;
+                    int ab = curCellSumB[c] / cnt;
+                    if (bgWarmupFrames == 0)
+                    {
+                        bgR[c] = ar;
+                        bgG[c] = ag;
+                        bgB[c] = ab;
+                    }
+                    else
+                    {
+                        bgR[c] += (ar - bgR[c]) >> 1;
+                        bgG[c] += (ag - bgG[c]) >> 1;
+                        bgB[c] += (ab - bgB[c]) >> 1;
+                    }
+                }
+            }
+            bgWarmupFrames++;
+            isHandVisible = false;
+            hasActiveHandBox = false;
+            currentLandmarks.confidence = 0f;
+            trackedHandCenter = Vector3.zero;
+            return false;
+        }
+
+        // Kiểm tra rung/di chuyển toàn khung hình hoặc thay đổi phơi sáng (auto-exposure)
+        int changedBgCells = 0;
+        int changedNonSkinCells = 0;
+        int validBgCells = 0;
+        for (int c = 0; c < GRID_SIZE; c++)
+        {
+            int cnt = curCellCount[c];
+            if (cnt <= 0) continue;
+            validBgCells++;
+            int ar = curCellSumR[c] / cnt;
+            int ag = curCellSumG[c] / cnt;
+            int ab = curCellSumB[c] / cnt;
+            int d = Mathf.Abs(ar - bgR[c]) + Mathf.Abs(ag - bgG[c]) + Mathf.Abs(ab - bgB[c]);
+            if (d > 40)
+            {
+                changedBgCells++;
+                if (!IsSkinColorYCrCb((byte)ar, (byte)ag, (byte)ab))
+                {
+                    changedNonSkinCells++;
+                }
+            }
+        }
+
+        if (validBgCells > 0 && (changedBgCells > validBgCells * 0.36f || changedNonSkinCells > validBgCells * 0.22f))
+        {
+            for (int c = 0; c < GRID_SIZE; c++)
+            {
+                int cnt = curCellCount[c];
+                if (cnt <= 0) continue;
+                bgR[c] += ((curCellSumR[c] / cnt) - bgR[c]) >> 1;
+                bgG[c] += ((curCellSumG[c] / cnt) - bgG[c]) >> 1;
+                bgB[c] += ((curCellSumB[c] / cnt) - bgB[c]) >> 1;
+            }
+            isHandVisible = false;
+            hasActiveHandBox = false;
+            currentLandmarks.confidence = 0f;
+            trackedHandCenter = Vector3.zero;
+            return false;
+        }
 
         // Phân cụm 2D (8-connected BFS) trên lưới 40x30
         int blobCount = 0;
@@ -313,7 +424,7 @@ public class MediaPipeHandTracker : MonoBehaviour
                 }
             }
 
-            if (cellCount >= 3 && skinSum >= 14 && blobCount < detectedBlobs.Length)
+            if (cellCount >= 6 && skinSum >= 50 && blobCount < detectedBlobs.Length)
             {
                 detectedBlobs[blobCount++] = new SkinBlob2D
                 {
@@ -425,7 +536,7 @@ public class MediaPipeHandTracker : MonoBehaviour
                 }
             }
 
-            if (exactSkinPixels >= 12 && exactMaxX > exactMinX && exactMaxY > exactMinY)
+            if (exactSkinPixels >= 60 && exactMaxX > exactMinX && exactMaxY > exactMinY)
             {
                 float invW = 1.0f / width;
                 float invH = 1.0f / height;
@@ -433,6 +544,33 @@ public class MediaPipeHandTracker : MonoBehaviour
                 float cY = (float)exactSumY / exactSkinPixels * invH;
                 float handW = (exactMaxX - exactMinX) * invW;
                 float handH = (exactMaxY - exactMinY) * invH;
+
+                if (handW < 0.075f || handH < 0.09f)
+                {
+                    hasActiveHandBox = false;
+                    AdaptBackgroundGrid(3, false);
+                    isHandVisible = false;
+                    handLostGraceTimer = 0f;
+                    currentLandmarks.confidence = 0f;
+                    trackedHandCenter = Vector3.zero;
+                    return false;
+                }
+
+                // Kiểm tra xem cụm mới nổi lên có thực sự là rìa mặt/cổ vừa nhúc nhích cạnh vùng da nền hay không
+                int bgSkinCells = 0;
+                for (int gy = best.minGy; gy <= best.maxGy; gy++)
+                {
+                    int gRow = gy * GRID_W;
+                    for (int gx = best.minGx; gx <= best.maxGx; gx++)
+                    {
+                        int c = gRow + gx;
+                        if (gridBlobId[c] == bestId && IsSkinColorYCrCb((byte)bgR[c], (byte)bgG[c], (byte)bgB[c]))
+                        {
+                            bgSkinCells++;
+                        }
+                    }
+                }
+                float bgSkinOverlap = (float)bgSkinCells / Mathf.Max(1, best.cellCount);
 
                 int boxW = exactMaxX - exactMinX;
                 int boxH = exactMaxY - exactMinY;
@@ -486,15 +624,19 @@ public class MediaPipeHandTracker : MonoBehaviour
                                         Vector2.Distance(new Vector2(cX, cY), knownFacePos) < 0.10f &&
                                         Mathf.Abs(handW - knownFaceW) < 0.09f &&
                                         Mathf.Abs(handH - knownFaceH) < 0.11f;
-                bool looksLikeFace = (darkFeatureRatio >= 0.055f && bestMotionRatio < 0.24f && handH >= 0.15f);
+                bool looksLikeFace = (darkFeatureRatio >= 0.050f && bestMotionRatio < 0.25f && handH >= 0.14f);
+                bool isFaceShiftRim = (!isHandVisible && bgSkinOverlap >= 0.40f && bestMotionRatio < 0.35f);
 
-                if (looksLikeFace || (matchesKnownFace && bestMotionRatio < 0.26f && (!isHandVisible || darkFeatureRatio >= 0.04f)) || (!isHandVisible && idleStaticBlobTimer >= 0.45f))
+                if (looksLikeFace || isFaceShiftRim || (matchesKnownFace && bestMotionRatio < 0.26f && (!isHandVisible || darkFeatureRatio >= 0.04f)) || (!isHandVisible && idleStaticBlobTimer >= 0.40f))
                 {
                     Vector2 faceCenter2D = new Vector2(cX, cY);
                     knownFacePos = hasKnownFace ? Vector2.Lerp(knownFacePos, faceCenter2D, 0.25f) : faceCenter2D;
                     knownFaceW = handW;
                     knownFaceH = handH;
                     hasKnownFace = true;
+
+                    hasActiveHandBox = false;
+                    AdaptBackgroundGrid(2, false);
 
                     isHandVisible = false;
                     handLostGraceTimer = 0f;
@@ -523,21 +665,32 @@ public class MediaPipeHandTracker : MonoBehaviour
                 }
 
                 bool wasVisible = isHandVisible;
-                // Chỉ dùng tâm chuyển động 1:1 khi thực sự có chuyển động tay mạnh (>= 22% vùng tay), tránh nhiễu/chớp mắt trên mặt gây vệt chém giả
-                bool hasStrongHandMotion = (moveSkinTotal >= 40) && (best.movingPixels >= 28) && (bestMotionRatio >= 0.22f);
-                Vector3 instantCenter = hasStrongHandMotion
-                    ? new Vector3((float)moveSumX / moveSkinTotal * invW, (float)moveSumY / moveSkinTotal * invH, 0.5f)
-                    : new Vector3(cX, cY, 0.5f);
+                // Luôn dùng tâm 2D ổn định của cụm bàn tay để tránh tâm bị giật giữa rìa chuyển động và toàn bàn tay
+                Vector3 instantCenter = new Vector3(cX, cY, 0.5f);
 
-                bool movedNow = best.movingPixels >= 16 || hasStrongHandMotion ||
+                bool movedNow = best.movingPixels >= 16 ||
                                 (wasVisible && Vector2.Distance(instantCenter, trackedHandCenter) >= 0.020f);
                 if (movedNow)
                 {
                     lastHandMotionTime = Time.time;
+                    activeHandHoldDuration = 0f;
+                }
+                else
+                {
+                    activeHandHoldDuration += 0.033f;
                 }
 
+                hasActiveHandBox = true;
+                activeMinGx = Mathf.Max(0, best.minGx - 1);
+                activeMaxGx = Mathf.Min(GRID_W - 1, best.maxGx + 1);
+                activeMinGy = Mathf.Max(0, best.minGy - 1);
+                activeMaxGy = Mathf.Min(GRID_H - 1, best.maxGy + 1);
+
+                // Cập nhật nền phía ngoài bàn tay (nếu giữ yên quá 8s thì hòa nền dần)
+                AdaptBackgroundGrid(4, activeHandHoldDuration < 8.0f);
+
                 isHandVisible = true;
-                handLostGraceTimer = 0.30f;
+                handLostGraceTimer = 0.25f;
                 currentLandmarks.confidence = 0.95f;
                 currentLandmarks.handWidth = handW;
                 currentLandmarks.handHeight = handH;
@@ -545,10 +698,10 @@ public class MediaPipeHandTracker : MonoBehaviour
                 currentLandmarks.fingerPeaks = fingerPeaks;
                 currentLandmarks.isMoving = (Time.time - lastHandMotionTime) <= 2.5f;
 
-                trackedHandCenter = (!wasVisible || trackedHandCenter == Vector3.zero || hasStrongHandMotion)
+                trackedHandCenter = (!wasVisible || trackedHandCenter == Vector3.zero)
                     ? instantCenter
-                    : Vector3.Lerp(trackedHandCenter, instantCenter, 0.90f);
-                currentLandmarks.centroid = instantCenter;
+                    : Vector3.Lerp(trackedHandCenter, instantCenter, 0.82f);
+                currentLandmarks.centroid = trackedHandCenter;
 
                 Vector3 wrist = new Vector3(cX, (float)exactMinY * invH, 0.5f);
                 currentLandmarks.landmarks[(int)HandJoint.Wrist] = wrist;
@@ -558,33 +711,61 @@ public class MediaPipeHandTracker : MonoBehaviour
             }
         }
 
-        // Khi người chơi hạ tay xuống: tắt bàn tay sau thời gian đệm
-        if (handLostGraceTimer <= 0f)
+        // Không có bàn tay nổi bật trên nền -> cập nhật nền và tắt nhận diện tay
+        hasActiveHandBox = false;
+        activeHandHoldDuration = 0f;
+        AdaptBackgroundGrid(3, false);
+
+        if (handLostGraceTimer <= 0f || blobCount == 0)
         {
             isHandVisible = false;
+            handLostGraceTimer = 0f;
             currentLandmarks.confidence = 0f;
             trackedHandCenter = Vector3.zero;
         }
         return false;
     }
 
+    private void AdaptBackgroundGrid(int shift, bool skipActiveBox)
+    {
+        for (int c = 0; c < GRID_SIZE; c++)
+        {
+            int cnt = curCellCount[c];
+            if (cnt <= 0) continue;
+
+            if (skipActiveBox && hasActiveHandBox)
+            {
+                int gx = c % GRID_W;
+                int gy = c / GRID_W;
+                if (gx >= activeMinGx && gx <= activeMaxGx && gy >= activeMinGy && gy <= activeMaxGy)
+                    continue;
+            }
+
+            bgR[c] += ((curCellSumR[c] / cnt) - bgR[c]) >> shift;
+            bgG[c] += ((curCellSumG[c] / cnt) - bgG[c]) >> shift;
+            bgB[c] += ((curCellSumB[c] / cnt) - bgB[c]) >> shift;
+        }
+    }
+
     /// <summary>
     /// Bộ lọc màu da tối ưu bằng số nguyên (YCrCb + RGB):
-    /// - Không dùng phép nhân số thực trên từng pixel để đạt tốc độ cao trên cả Mobile.
-    /// - Nhận diện tốt dưới cả ánh sáng ấm, đèn LED trắng và khi vung tay nhanh.
+    /// - Loại bỏ áo đỏ/đỏ đô (r - g > 58), tường xám (r - g < 6), màu tím và vật tối.
     /// </summary>
     private bool IsSkinColorYCrCb(byte r, byte g, byte b)
     {
-        if (r < 45) return false;
+        if (r < 55) return false;
         int sum = r + g + b;
-        if (sum < 100 || sum > 750) return false;
+        if (sum < 130 || sum > 740) return false;
 
-        if (r - g < 4 || r - b < 5) return false;
+        int rg = r - g;
+        int rb = r - b;
+        if (rg < 6 || rg > 58 || rb < 8) return false;
+        if (b - g > 6) return false;
 
         int cr = 128 + ((128 * r - 107 * g - 21 * b) >> 8);
         int cb = 128 + ((-43 * r - 85 * g + 128 * b) >> 8);
 
-        return (cr >= 126 && cr <= 188 && cb >= 68 && cb <= 138);
+        return (cr >= 131 && cr <= 168 && cb >= 76 && cb <= 130);
     }
 
     private void BuildDynamicFingers(int[] topY, int minX, int maxX, int minY, int maxY, int width, int height, Vector3 wrist)
@@ -720,13 +901,13 @@ public class MediaPipeHandTracker : MonoBehaviour
         if (GestureRecognizer.Instance != null && isHandVisible)
         {
             HandGestureType g = GestureRecognizer.Instance.GetCurrentConfirmedGesture();
-            if (g == HandGestureType.Slash) gestureText = " | <color=#ff3333><b>⚔️ CHÉM QUÁI!</b></color>";
-            else if (g == HandGestureType.OpenPalm) gestureText = " | <color=#00e5ff><b>🛡️ TƯỜNG CHẮN</b></color>";
-            else if (g == HandGestureType.Grab) gestureText = " | <color=#ffaa00><b>✊ CHẾ ĐỘ NHẶT TIM</b></color>";
+            if (g == HandGestureType.Slash) gestureText = " | <color=#ff3333><b>CHÉM QUÁI!</b></color>";
+            else if (g == HandGestureType.OpenPalm) gestureText = " | <color=#00e5ff><b>TƯỜNG CHẮN</b></color>";
+            else if (g == HandGestureType.Grab) gestureText = " | <color=#ffaa00><b>NHẶT TIM</b></color>";
         }
         else if (!isHandVisible)
         {
-            gestureText = " | 🛡️ Giơ tay: Khiên | ✊ Chụm: Nhặt | ⚔️ Vung: Chém";
+            gestureText = " | Giơ tay: Khiên | Chụm: Nhặt | Vung: Chém";
         }
 
         string text = $"[MediaPipe AI] {handStatus}{speedText}{gestureText}";

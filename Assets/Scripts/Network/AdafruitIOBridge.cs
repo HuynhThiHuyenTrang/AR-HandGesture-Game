@@ -58,6 +58,7 @@ public class AdafruitIOBridge : MonoBehaviour
         public int set_level;
         public int pause_game;
         public string reset_ts;
+        public bool sync_started;
         public bool mqtt_connected;
     }
 
@@ -129,8 +130,46 @@ public class AdafruitIOBridge : MonoBehaviour
     public void SetDockerBridgeUrl(string url)
     {
         dockerBridgeUrl = url.TrimEnd('/');
+        if (!dockerBridgeUrl.StartsWith("http://") && !dockerBridgeUrl.StartsWith("https://"))
+        {
+            dockerBridgeUrl = "http://" + dockerBridgeUrl;
+        }
         PlayerPrefs.SetString("DockerBridgeUrl", dockerBridgeUrl);
         PlayerPrefs.Save();
+        StartCoroutine(TestDockerHealthRoutine());
+    }
+
+    private IEnumerator TestDockerHealthRoutine()
+    {
+        if (string.IsNullOrEmpty(dockerBridgeUrl)) yield break;
+        string healthUrl = $"{dockerBridgeUrl.TrimEnd('/')}/health";
+        lastStatusMessage = $"Đang thử kết nối {dockerBridgeUrl}...";
+        using (UnityWebRequest req = UnityWebRequest.Get(healthUrl))
+        {
+            req.timeout = 3;
+            yield return req.SendWebRequest();
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                isUsingDocker = true;
+                isConnected = true;
+                lastStatusMessage = "Docker Bridge: Đã kết nối!";
+            }
+            else
+            {
+                lastStatusMessage = $"Lỗi Docker: {req.error}";
+            }
+        }
+    }
+
+    public string GetDockerBridgeUrl() => dockerBridgeUrl;
+    public bool IsConnected() => isConnected;
+    public bool IsUsingDocker() => isUsingDocker;
+    public string GetStatusMessage() => lastStatusMessage;
+    public bool IsServerConfigOpen() => showServerConfig;
+    public void ToggleServerConfig()
+    {
+        showServerConfig = !showServerConfig;
+        tempDockerUrl = dockerBridgeUrl;
     }
 
     private IEnumerator PublishTelemetryRoutine()
@@ -290,12 +329,17 @@ public class AdafruitIOBridge : MonoBehaviour
                     {
                         polledDocker = true;
                         isUsingDocker = true;
+                        isConnected = true;
                         DockerControlResponse ctrl = JsonUtility.FromJson<DockerControlResponse>(dReq.downloadHandler.text);
                         if (ctrl != null)
                         {
                             ApplyLevelControl(ctrl.set_level);
                             ApplyPauseControl(ctrl.pause_game);
                             ApplyResetControl(ctrl.reset_ts);
+                            if (ctrl.sync_started && GameHUDController.Instance != null && !GameHUDController.Instance.IsGameStarted())
+                            {
+                                GameHUDController.Instance.StartGame(false);
+                            }
                         }
                     }
                 }
@@ -313,6 +357,7 @@ public class AdafruitIOBridge : MonoBehaviour
 
                     if (req.result == UnityWebRequest.Result.Success)
                     {
+                        isConnected = true;
                         GroupResponse group = JsonUtility.FromJson<GroupResponse>(req.downloadHandler.text);
                         if (group != null && group.feeds != null)
                         {
@@ -358,6 +403,25 @@ public class AdafruitIOBridge : MonoBehaviour
         }
     }
 
+    public void NotifyGameStartedToDocker()
+    {
+        if (useDockerBridge && !string.IsNullOrEmpty(dockerBridgeUrl))
+        {
+            StartCoroutine(SendSyncStartRoutine(true));
+        }
+    }
+
+    private IEnumerator SendSyncStartRoutine(bool started)
+    {
+        string url = $"{dockerBridgeUrl.TrimEnd('/')}/sync_start?started={(started ? "true" : "false")}";
+        using (UnityWebRequest req = new UnityWebRequest(url, "POST"))
+        {
+            req.downloadHandler = new DownloadHandlerBuffer();
+            req.timeout = 2;
+            yield return req.SendWebRequest();
+        }
+    }
+
     private void ApplyResetControl(string timestamp)
     {
         if (string.IsNullOrEmpty(timestamp)) return;
@@ -383,10 +447,12 @@ public class AdafruitIOBridge : MonoBehaviour
 
     void OnGUI()
     {
+        GUI.depth = showServerConfig ? -100 : -10;
+
         if (cachedConnStyle == null)
         {
             cachedConnStyle = new GUIStyle();
-            cachedConnStyle.fontSize = 10;
+            cachedConnStyle.fontSize = 12;
             cachedConnStyle.fontStyle = FontStyle.Bold;
         }
         cachedConnStyle.normal.textColor = isConnected ? new Color(0.2f, 1f, 0.4f, 0.85f) : new Color(1f, 0.6f, 0.2f, 0.85f);
@@ -394,7 +460,7 @@ public class AdafruitIOBridge : MonoBehaviour
 
         string mode = isUsingDocker ? "Docker + Adafruit IO" : "Adafruit IO";
         string connText = isConnected ? $"● {mode}: ĐÃ KẾT NỐI (Chạm sửa IP)" : $"○ {mode}: ĐANG KẾT NỐI... (Chạm sửa IP)";
-        if (GUI.Button(new Rect(28, 4, 280, 18), connText, style))
+        if (GUI.Button(new Rect(28, 4, 300, 24), connText, style))
         {
             showServerConfig = !showServerConfig;
             tempDockerUrl = dockerBridgeUrl;
@@ -402,28 +468,39 @@ public class AdafruitIOBridge : MonoBehaviour
 
         if (showServerConfig)
         {
-            float boxW = Mathf.Min(Screen.width - 40, 320);
-            Rect boxRect = new Rect(25, 105, boxW, 125);
-            GUI.Box(boxRect, "Cấu hình Docker Bridge (Máy khác)");
+            float boxW = Mathf.Min(Screen.width - 32, 420);
+            float boxH = 210f;
+            float boxX = (Screen.width - boxW) / 2f;
+            float boxY = Mathf.Min(Screen.height * 0.16f, 120f);
+            Rect boxRect = new Rect(boxX, boxY, boxW, boxH);
 
-            GUI.Label(new Rect(boxRect.x + 10, boxRect.y + 24, boxW - 20, 20), "URL Docker (VD: http://192.168.1.10:8000):");
-            tempDockerUrl = GUI.TextField(new Rect(boxRect.x + 10, boxRect.y + 46, boxW - 20, 26), tempDockerUrl);
+            GUI.Box(boxRect, "");
+            GUI.Box(boxRect, "Cấu hình Docker Bridge (IP Máy tính)");
 
-            if (GUI.Button(new Rect(boxRect.x + 10, boxRect.y + 82, 110, 30), "Lưu & Kết nối"))
+            GUIStyle lblStyle = new GUIStyle(GUI.skin.label) { fontSize = 14, fontStyle = FontStyle.Bold };
+            GUI.Label(new Rect(boxRect.x + 14, boxRect.y + 34, boxW - 28, 26), "Nhập URL Docker (VD: http://192.168.10.237:8000):", lblStyle);
+
+            GUIStyle fieldStyle = new GUIStyle(GUI.skin.textField) { fontSize = 16, alignment = TextAnchor.MiddleLeft };
+            tempDockerUrl = GUI.TextField(new Rect(boxRect.x + 14, boxRect.y + 66, boxW - 28, 44), tempDockerUrl, fieldStyle);
+
+            GUIStyle btnStyle = new GUIStyle(GUI.skin.button) { fontSize = 14, fontStyle = FontStyle.Bold };
+            float btnW = (boxW - 44) / 3f;
+
+            if (GUI.Button(new Rect(boxRect.x + 14, boxRect.y + 130, btnW, 48), "Lưu & Kết nối", btnStyle))
             {
                 useDockerBridge = true;
                 SetDockerBridgeUrl(tempDockerUrl);
                 showServerConfig = false;
             }
 
-            if (GUI.Button(new Rect(boxRect.x + 128, boxRect.y + 82, 110, 30), "Chạy Direct"))
+            if (GUI.Button(new Rect(boxRect.x + 22 + btnW, boxRect.y + 130, btnW, 48), "Chạy Direct", btnStyle))
             {
                 useDockerBridge = false;
                 isUsingDocker = false;
                 showServerConfig = false;
             }
 
-            if (GUI.Button(new Rect(boxRect.x + 246, boxRect.y + 82, 60, 30), "Đóng"))
+            if (GUI.Button(new Rect(boxRect.x + 30 + btnW * 2, boxRect.y + 130, btnW, 48), "Đóng", btnStyle))
             {
                 showServerConfig = false;
             }

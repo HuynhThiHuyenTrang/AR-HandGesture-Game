@@ -358,10 +358,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a1d0275ddce95a04d937ca4d33ef7266, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  slashSpeedThreshold: 0.18
-  slashMinDisplacement: 0.04
+  slashSpeedThreshold: 0.48
+  slashMinDisplacement: 0.14
   openPalmMinPinch: 0.075
-  pinchDistanceThreshold: 0.105
+  pinchDistanceThreshold: 0.085
   slashCooldown: 0.14
   gestureCooldown: 0.18
   confidenceThreshold: 0.5
@@ -686,7 +686,7 @@ MonoBehaviour:
   m_AutoFocus: 1
   m_ImageStabilization: 0
   m_LightEstimation: 0
-  m_FacingDirection: 2
+  m_FacingDirection: 1
   m_RenderMode: 0
 --- !u!81 &1105586631
 AudioListener:
